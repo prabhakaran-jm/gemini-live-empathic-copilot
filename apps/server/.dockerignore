@@ -1,0 +1,23 @@
+# Local / IDE
+.venv
+venv
+env
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Git / docs (not needed in image)
+.git
+.gitignore
+*.md
+docs/
+
+# Scripts (dev only)
+scripts/
+
+# Tests (optional in image)
+tests/
+test_*
+*_test.py

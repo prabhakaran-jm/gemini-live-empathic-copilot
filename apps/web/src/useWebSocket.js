@@ -1,20 +1,34 @@
 /**
  * WebSocket hook for Empathic Co-Pilot protocol.
- * Set VITE_WS_URL to ws://localhost:8765/ws for real backend, or use mock.
+ * If VITE_WS_URL is set, use it as the WebSocket endpoint (ws/wss corrected). Otherwise use proxy for localhost dev.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const DEFAULT_WS_URL = (import.meta.env.VITE_WS_URL || '').trim() || null
+const RAW_WS_URL = (import.meta.env.VITE_WS_URL || '').trim() || null
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_WS === 'true'
 
+/** Normalize URL to ws: or wss: based on http(s): or existing ws(s): */
+function normalizeWsUrl(url) {
+  if (!url) return null
+  const u = url.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://')
+  return u.startsWith('ws://') || u.startsWith('wss://') ? u : `wss://${u}`
+}
+
 function getWsUrl() {
-  if (DEFAULT_WS_URL) return DEFAULT_WS_URL
+  if (RAW_WS_URL) return normalizeWsUrl(RAW_WS_URL)
   if (typeof window !== 'undefined' && window.location) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     return `${proto}//${host}/ws`
   }
   return 'ws://localhost:8765/ws'
+}
+
+/** 'cloudrun' when using an explicit VITE_WS_URL that is not localhost; otherwise 'local' */
+function getBackendSource() {
+  if (!RAW_WS_URL) return 'local'
+  const u = RAW_WS_URL.toLowerCase()
+  return (u.includes('localhost') || u.includes('127.0.0.1')) ? 'local' : 'cloudrun'
 }
 
 /** In-browser mock: no server needed. Sends ready, then periodic tension + whispers. */
@@ -123,5 +137,5 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
     }
   }, [])
 
-  return { connected, lastError, connect, disconnect, send, useMock }
+  return { connected, lastError, connect, disconnect, send, useMock, backendSource: getBackendSource() }
 }

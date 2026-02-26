@@ -48,7 +48,7 @@ export default function App() {
     }
   }, [addLog])
 
-  const { connected, lastError, connect, disconnect, send, useMock } = useWebSocket({
+  const { connected, lastError, connect, disconnect, send, useMock, backendSource } = useWebSocket({
     onMessage,
     onOutbound,
     useMock: import.meta.env.VITE_USE_MOCK_WS === 'true',
@@ -121,6 +121,11 @@ export default function App() {
       <header className="header">
         <h1>Empathic Co-Pilot</h1>
         <p className="subtitle">Live tension + coaching whispers (MVP)</p>
+        {!useMock && (
+          <p className="backend-indicator" aria-label="Backend source">
+            Backend: {backendSource === 'cloudrun' ? 'Cloud Run' : 'Local'}
+          </p>
+        )}
       </header>
 
       <section className="controls">

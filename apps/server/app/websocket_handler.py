@@ -50,6 +50,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     events_task: asyncio.Task | None = None
     whisper_task: asyncio.Task | None = None
     agent_output_started: bool = False
+    degraded_mode: bool = False  # True when Gemini connect failed; tension + whisper_loop still run
     running = True
     rms_ema_ref: list[float] = [0.0]
     last_tension_score: int = 0
@@ -125,13 +126,13 @@ async def handle_websocket(websocket: WebSocket) -> None:
             logger.exception("recv_events error: %s", e)
 
     async def whisper_loop() -> None:
-        """Real mode only: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
+        """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
         nonlocal last_whisper_ts, prev_tension_score, last_tension_score
-        while running and session is not None:
+        while running and (session is not None or degraded_mode):
             await asyncio.sleep(0.25)
-            if not running or session is None:
-                return
             now = time.time()
+            if not running or (session is None and not degraded_mode):
+                return
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
             move_entry = None
@@ -192,13 +193,23 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     continue
                 await send_json(websocket, {"type": "ready"})
                 if not MOCK_MODE:
-                    client = get_gemini_client()
-                    session = await client.connect(LiveSessionConfig())
-                    if hasattr(session, "recv_events"):
-                        events_task = asyncio.create_task(consume_recv_events())
-                    if hasattr(session, "agent_turns"):
-                        agent_task = asyncio.create_task(consume_agent_turns())
-                    whisper_task = asyncio.create_task(whisper_loop())
+                    try:
+                        client = get_gemini_client()
+                        session = await client.connect(LiveSessionConfig())
+                        if hasattr(session, "recv_events"):
+                            events_task = asyncio.create_task(consume_recv_events())
+                        if hasattr(session, "agent_turns"):
+                            agent_task = asyncio.create_task(consume_agent_turns())
+                        whisper_task = asyncio.create_task(whisper_loop())
+                    except Exception as e:
+                        logger.exception("Gemini connect failed; starting degraded (local-only) mode: %s", e)
+                        await send_json(
+                            websocket,
+                            {"type": "error", "message": "Gemini unavailable; running local coaching only"},
+                        )
+                        session = None
+                        degraded_mode = True
+                        whisper_task = asyncio.create_task(whisper_loop())
                 tension_task = asyncio.create_task(run_tension_loop())
                 if MOCK_MODE:
                     mock_task = asyncio.create_task(mock_loop())
