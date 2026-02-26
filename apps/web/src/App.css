@@ -1,0 +1,173 @@
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.header {
+  margin-bottom: 1.5rem;
+}
+
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem 0;
+}
+
+.subtitle {
+  color: #666;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  cursor: pointer;
+  background: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-start {
+  background: #0d6efd;
+  color: #fff;
+  border-color: #0d6efd;
+}
+
+.btn-start:hover:not(:disabled) {
+  background: #0b5ed7;
+}
+
+.btn-stop {
+  background: #dc3545;
+  color: #fff;
+  border-color: #dc3545;
+}
+
+.btn-stop:hover {
+  background: #bb2d3b;
+}
+
+.error {
+  color: #dc3545;
+  font-size: 0.9rem;
+}
+
+.tension-section {
+  margin-bottom: 1.5rem;
+}
+
+.tension-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+}
+
+.tension-value {
+  font-weight: 600;
+}
+
+.tension-bar-wrap {
+  height: 12px;
+  background: #e9ecef;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tension-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #198754, #ffc107, #dc3545);
+  border-radius: 6px;
+  transition: width 0.2s ease;
+}
+
+.whisper-box {
+  padding: 1rem;
+  background: #f8f9fa;
+  border-left: 4px solid #0d6efd;
+  border-radius: 4px;
+  margin-bottom: 1.5rem;
+}
+
+.whisper-move {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #666;
+  margin-bottom: 0.35rem;
+}
+
+.whisper-text {
+  font-size: 0.95rem;
+  font-style: italic;
+}
+
+.logs-section h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.logs-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0.25rem;
+}
+
+.logs-empty {
+  padding: 0.75rem;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.log-entry:hover {
+  background: #f8f9fa;
+}
+
+.log-in {
+  border-left: 3px solid #198754;
+}
+
+.log-out {
+  border-left: 3px solid #0d6efd;
+}
+
+.log-ts {
+  flex-shrink: 0;
+  color: #666;
+}
+
+.log-dir {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.log-text {
+  flex: 1;
+  min-width: 0;
+}

@@ -1,0 +1,7 @@
+# Empathic Co-Pilot backend – minimal deps for MVP
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=14.0
+
+# Gemini Live API (real client; optional when MOCK=1)
+google-genai>=1.0.0
