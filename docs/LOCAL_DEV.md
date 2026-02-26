@@ -67,7 +67,16 @@ App runs at **http://localhost:5173**. Vite proxies `/ws` and `/health` to the b
 ```powershell
 $env:VITE_USE_MOCK_WS="true"; npm run dev
 ```
-Uses an in-browser mock: no server needed; tension and whispers are simulated.
+Uses an in-browser mock: no server needed; tension and whispers are simulated. In mock mode the app does **not** request microphone access.
+
+### Microphone and audio format
+
+When not using mock mode, **Start session** will request browser microphone permission. Allow access so the app can stream live audio to the backend.
+
+- **Format sent to backend:** PCM 16-bit mono, 16 kHz, base64-encoded in WebSocket messages `{ type: "audio", base64: "<...>", telemetry?: { rms } }`.
+- **Chunk size:** 20–40 ms (configurable in `src/audioCapture.js`). Typical chunk is ~640 bytes (40 ms at 16 kHz).
+- **RMS:** The frontend computes RMS per chunk (0–1) and sends it in `telemetry.rms`; the **Mic (RMS)** bar in the UI helps calibrate input level.
+- **HTTPS / localhost:** `getUserMedia` requires a secure context (https or localhost). For local dev, use `http://localhost:5173`.
 
 ---
 
@@ -128,9 +137,14 @@ The script opens a Live session, sends ~1s of silent PCM16 16 kHz in chunks, and
 1. **With backend:** Terminal 1 run server (optionally `MOCK=1`), Terminal 2 run `npm run dev`. Open http://localhost:5173 → Start session → see tension bar and event log; mock server sends tension + whispers every few seconds.
 2. **Frontend only:** Terminal 2 run `VITE_USE_MOCK_WS=true npm run dev` → Start session → same UI with in-browser mock.
 
+### Verify real mode (MOCK off)
+
+1. **Transcript:** Start session (real backend, no `MOCK=1`), allow mic, speak. The **Live Transcript** panel should append text as the model transcribes. Event log stays separate (no transcript flooding).
+2. **Whispers:** Deterministic triggers (12s cooldown): (a) tension crosses up into ≥40 → *slow_down*; (b) ≥2 barge-in events in last 5s → *reflect_back*; (c) silence >2.5s and tension was ≥70 in last 10s → *clarify_intent*. Run a scripted scenario (e.g. speak, then stay silent >2.5s after a tense moment) to see a whisper.
+3. **Barge-in:** While the agent is speaking (transcript or TTS), talk over it; the **Event log** should show an `event` `interrupted` entry, and the agent should stop.
+
 ---
 
 ## Next steps (post-MVP)
 
-- Add microphone capture in the frontend and send base64 PCM in `audio` messages.
 - Optional: TTS for whispers.

@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.coaching import COACHING_MOVES
+from app.coaching import COACHING_MOVES, get_move_by_id
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 MOCK_MODE = os.environ.get("MOCK", "").lower() in ("1", "true", "yes")
 BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
+RMS_EMA_ALPHA = 0.2  # rms_ema = (1-alpha)*prev + alpha*current
+SILENCE_RMS_THRESHOLD = 0.05
+WHISPER_COOLDOWN_SEC = 12.0
+SILENCE_THRESHOLD_SEC = 2.5
+TENSION_HIGH_WINDOW_SEC = 10.0
+OVERLAP_WINDOW_SEC = 5.0
+OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -41,12 +48,26 @@ async def handle_websocket(websocket: WebSocket) -> None:
     tension_task: asyncio.Task | None = None
     agent_task: asyncio.Task | None = None
     events_task: asyncio.Task | None = None
+    whisper_task: asyncio.Task | None = None
     agent_output_started: bool = False
     running = True
+    rms_ema_ref: list[float] = [0.0]
+    last_tension_score: int = 0
+    prev_tension_score: int = 0
+    tension_history: list[tuple[float, int]] = []
+    last_whisper_ts: float = 0.0
+    interrupted_events: list[float] = []
 
     def on_tension(score: int) -> None:
+        nonlocal last_tension_score, prev_tension_score, tension_history
+        prev_tension_score = last_tension_score
+        last_tension_score = score
+        now = time.time()
+        tension_history.append((now, score))
+        while tension_history and now - tension_history[0][0] > TENSION_HIGH_WINDOW_SEC:
+            tension_history.pop(0)
         asyncio.create_task(
-            send_json(websocket, {"type": "tension", "score": score, "ts": int(time.time() * 1000)})
+            send_json(websocket, {"type": "tension", "score": score, "ts": int(now * 1000)})
         )
 
     async def run_tension_loop() -> None:
@@ -92,13 +113,50 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 elif ev.kind == "agent_output_stopped":
                     agent_output_started = False
                 elif ev.kind == "transcript_delta" and ev.text:
-                    pass  # optional: send to frontend for display
+                    await send_json(
+                        websocket,
+                        {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
+                    )
                 elif ev.kind == "error":
                     await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.exception("recv_events error: %s", e)
+
+    async def whisper_loop() -> None:
+        """Real mode only: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
+        nonlocal last_whisper_ts, prev_tension_score, last_tension_score
+        while running and session is not None:
+            await asyncio.sleep(0.25)
+            if not running or session is None:
+                return
+            now = time.time()
+            if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
+                continue
+            move_entry = None
+            # (a) Tension crossed upward into >=40
+            if prev_tension_score < 40 and last_tension_score >= 40:
+                move_entry = get_move_by_id("slow_down")
+            # (b) Overlap heuristic: high interruption rate in last 5s
+            if move_entry is None:
+                recent = [t for t in interrupted_events if now - t <= OVERLAP_WINDOW_SEC]
+                if len(recent) >= OVERLAP_MIN_COUNT:
+                    move_entry = get_move_by_id("reflect_back")
+            # (c) Silence >2.5s and tension was >=70 in last 10s
+            if move_entry is None and tension_state.silence_start is not None:
+                silence_sec = now - tension_state.silence_start
+                if silence_sec >= SILENCE_THRESHOLD_SEC:
+                    high_in_window = any(s >= 70 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
+                    if high_in_window:
+                        move_entry = get_move_by_id("clarify_intent")
+            if move_entry is not None:
+                last_whisper_ts = now
+                prev_tension_score = last_tension_score
+                await send_json(
+                    websocket,
+                    {"type": "whisper", "text": move_entry["text"], "move": move_entry["move"], "ts": int(now * 1000)},
+                )
 
     async def mock_loop() -> None:
         """When MOCK_MODE: periodically send tension + occasional whisper."""
@@ -140,6 +198,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         events_task = asyncio.create_task(consume_recv_events())
                     if hasattr(session, "agent_turns"):
                         agent_task = asyncio.create_task(consume_agent_turns())
+                    whisper_task = asyncio.create_task(whisper_loop())
                 tension_task = asyncio.create_task(run_tension_loop())
                 if MOCK_MODE:
                     mock_task = asyncio.create_task(mock_loop())
@@ -167,6 +226,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         await events_task
                     except asyncio.CancelledError:
                         pass
+                if whisper_task:
+                    whisper_task.cancel()
+                    try:
+                        await whisper_task
+                    except asyncio.CancelledError:
+                        pass
                 if mock_task:
                     mock_task.cancel()
                     try:
@@ -178,16 +243,29 @@ async def handle_websocket(websocket: WebSocket) -> None:
             elif t == "audio":
                 base64_audio = (msg.get("base64") or "").strip()
                 if not base64_audio:
+                    base64_audio = (msg.get("pcm_base64") or "").strip()
+                    if base64_audio:
+                        logger.warning("pcm_base64 is deprecated; use 'base64' per protocol.")
+                if not base64_audio:
                     continue
                 try:
                     raw_bytes = base64.b64decode(base64_audio, validate=True)
                 except Exception:
                     continue
-                rms = min(1.0, len(raw_bytes) / 1024.0) if raw_bytes else 0.0
+                telemetry_in = msg.get("telemetry") or {}
+                rms_raw = telemetry_in.get("rms") if isinstance(telemetry_in.get("rms"), (int, float)) else None
+                if rms_raw is None:
+                    rms_raw = min(1.0, len(raw_bytes) / 1024.0) if raw_bytes else 0.0
+                else:
+                    rms_raw = min(1.0, max(0.0, float(rms_raw)))
+                rms_ema_ref[0] = (1.0 - RMS_EMA_ALPHA) * rms_ema_ref[0] + RMS_EMA_ALPHA * rms_raw
+                rms_ema = rms_ema_ref[0]
+                is_silence = rms_ema < SILENCE_RMS_THRESHOLD
+                barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 telemetry = AudioTelemetry(
-                    rms=rms,
-                    is_silence=len(raw_bytes) < 100,
-                    is_overlap=agent_output_started and rms >= BARGE_IN_RMS_THRESHOLD,
+                    rms=rms_ema,
+                    is_silence=is_silence,
+                    is_overlap=barge_in_trigger,
                     ts=time.time(),
                 )
                 try:
@@ -195,12 +273,16 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 except asyncio.QueueFull:
                     pass
                 if session and not MOCK_MODE:
-                    if agent_output_started and rms >= BARGE_IN_RMS_THRESHOLD:
+                    if barge_in_trigger:
                         if hasattr(session, "stop_generation"):
                             await session.stop_generation()
+                        now_ts = time.time()
+                        interrupted_events.append(now_ts)
+                        while interrupted_events and now_ts - interrupted_events[0] > OVERLAP_WINDOW_SEC:
+                            interrupted_events.pop(0)
                         await send_json(
                             websocket,
-                            {"type": "event", "name": "interrupted", "ts": int(time.time() * 1000)},
+                            {"type": "event", "name": "interrupted", "ts": int(now_ts * 1000)},
                         )
                         agent_output_started = False
                     await session.send_audio(base64_audio)
@@ -223,6 +305,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
             events_task.cancel()
             try:
                 await events_task
+            except asyncio.CancelledError:
+                pass
+        if whisper_task and not whisper_task.done():
+            whisper_task.cancel()
+            try:
+                await whisper_task
             except asyncio.CancelledError:
                 pass
         if mock_task and not mock_task.done():

@@ -123,5 +123,5 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
     }
   }, [])
 
-  return { connected, lastError, connect, disconnect, send }
+  return { connected, lastError, connect, disconnect, send, useMock }
 }

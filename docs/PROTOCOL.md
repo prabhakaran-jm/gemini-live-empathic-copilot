@@ -24,7 +24,7 @@ Our backend speaks this protocol with the browser and (separately) with Gemini L
 |---------------|--------------------|---------|
 | `start`       | Start session      | `{}` or optional `{ "config": {} }` |
 | `stop`        | End session        | `{}` |
-| `audio`       | Raw audio chunk    | `{ "base64": "<base64 PCM>" }` (e.g. 16 kHz, 16-bit mono) |
+| `audio`       | Raw audio chunk    | `{ "base64": "<base64 PCM>" }` (e.g. 16 kHz, 16-bit mono). Optional: `telemetry`: `{ "rms": number }`. |
 
 ### Server → Client (backend sends)
 
@@ -32,12 +32,14 @@ Our backend speaks this protocol with the browser and (separately) with Gemini L
 |------------------|--------------------------|---------|
 | `ready`          | Session ready            | `{}` |
 | `tension`        | Updated tension score    | `{ "score": number 0–100, "ts": number }` |
+| `transcript`     | Live transcript delta    | `{ "delta": string, "ts": number }` |
 | `whisper`        | Coaching whisper (text)   | `{ "text": string, "move": string, "ts": number }` |
 | `error`          | Error                    | `{ "message": string }` |
 | `event`          | Client event (e.g. barge-in) | `{ "name": string, "ts": number }` e.g. `name: "interrupted"` |
 | `stopped`        | Session ended            | `{}` |
 
 - All server messages that carry a timestamp use `ts` as Unix milliseconds (optional but recommended for logs).
+- Client `audio` messages may include optional `telemetry`: `{ "rms": number }` (0–1) for backend tension and barge-in.
 
 ---
 
