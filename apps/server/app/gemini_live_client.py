@@ -159,7 +159,15 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                     break
                 sc = getattr(msg, "server_content", None)
                 if sc is not None:
-                    # Transcript / model output
+                    # --- input_audio_transcription results (native-audio models) ---
+                    input_tx = getattr(sc, "input_transcription", None)
+                    if input_tx:
+                        tx_text = getattr(input_tx, "text", None)
+                        if tx_text:
+                            self._event_queue.put_nowait(
+                                LiveEvent(kind="transcript_delta", text=tx_text)
+                            )
+                    # --- model_turn text parts (non-native models, or model responses) ---
                     mt = getattr(sc, "model_turn", None)
                     if mt and getattr(mt, "parts", None):
                         for part in mt.parts:
@@ -170,6 +178,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                 )
                     if getattr(sc, "interrupted", None) or getattr(sc, "turn_complete", None):
                         self._event_queue.put_nowait(LiveEvent(kind="agent_output_stopped"))
+                # --- top-level .text shorthand ---
                 if getattr(msg, "text", None) and msg.text:
                     self._event_queue.put_nowait(
                         LiveEvent(kind="transcript_delta", text=msg.text)
@@ -223,13 +232,41 @@ class RealGeminiLiveClient(IGeminiLiveClient):
 
     async def connect(self, config: LiveSessionConfig) -> IGeminiLiveSession:
         client = _make_genai_client()
-        live_config = {
-            "response_modalities": ["TEXT"],
-            "speech_config": {
-                "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
-            },
-        }
-        cm = client.aio.live.connect(model=config.model, config=live_config)
+        model = config.model
+        is_native_audio = "native-audio" in model
+
+        if is_native_audio:
+            # Native-audio models REQUIRE response_modalities=["AUDIO"].
+            # We add input_audio_transcription to receive text transcripts
+            # of the user's speech, and instruct the model to stay quiet.
+            live_config = {
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
+                },
+                "input_audio_transcription": {},
+                "system_instruction": {
+                    "parts": [
+                        {
+                            "text": (
+                                "You are an invisible listening assistant. "
+                                "Your ONLY job is to transcribe what the user says. "
+                                "Do NOT speak, do NOT generate audio output, do NOT respond. "
+                                "Stay completely silent."
+                            )
+                        }
+                    ]
+                },
+            }
+        else:
+            # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
+            # Do NOT include speech_config with TEXT — they are incompatible.
+            live_config = {
+                "response_modalities": ["TEXT"],
+            }
+
+        logger.info("Connecting to Gemini Live: model=%s, native_audio=%s", model, is_native_audio)
+        cm = client.aio.live.connect(model=model, config=live_config)
         session = await cm.__aenter__()
         real_session = RealGeminiLiveSession(config, session, cm)
         asyncio.create_task(real_session._receive_loop())
