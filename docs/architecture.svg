@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#8b949e"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#f0883e"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3fb950"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="520" rx="12" fill="#0d1117"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" fill="#f0f6fc" font-size="18" font-weight="700">Empathic Co-Pilot — Architecture</text>
+
+  <!-- Browser box -->
+  <rect x="30" y="60" width="250" height="180" rx="12" fill="#1f6feb15" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="155" y="85" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Browser (React + Vite)</text>
+  <rect x="50" y="100" width="210" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="155" y="123" text-anchor="middle" fill="#c9d1d9" font-size="11">Mic Capture (PCM16 16kHz)</text>
+  <rect x="50" y="148" width="210" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="155" y="171" text-anchor="middle" fill="#c9d1d9" font-size="11">Tension Bar + Whisper Box</text>
+  <rect x="50" y="196" width="210" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="155" y="219" text-anchor="middle" fill="#c9d1d9" font-size="11">TTS Playback (Web Speech)</text>
+
+  <!-- Cloud Run box -->
+  <rect x="340" y="60" width="250" height="230" rx="12" fill="#23863615" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="465" y="85" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="600">Cloud Run (FastAPI)</text>
+  <rect x="360" y="100" width="210" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="465" y="123" text-anchor="middle" fill="#c9d1d9" font-size="11">WebSocket /ws</text>
+  <rect x="360" y="148" width="210" height="50" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="465" y="168" text-anchor="middle" fill="#c9d1d9" font-size="11">Tension Loop (0.5s)</text>
+  <text x="465" y="184" text-anchor="middle" fill="#8b949e" font-size="9">RMS + Silence + Overlap → 0-100</text>
+  <rect x="360" y="210" width="210" height="66" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="465" y="230" text-anchor="middle" fill="#c9d1d9" font-size="11">Whisper Loop (12s cooldown)</text>
+  <text x="465" y="246" text-anchor="middle" fill="#8b949e" font-size="9">Triggers: tension ≥40,</text>
+  <text x="465" y="260" text-anchor="middle" fill="#8b949e" font-size="9">2+ barge-ins, post-escalation silence</text>
+
+  <!-- Gemini Live box -->
+  <rect x="650" y="60" width="220" height="130" rx="12" fill="#f0883e15" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="760" y="85" text-anchor="middle" fill="#f0883e" font-size="13" font-weight="600">Gemini Live API</text>
+  <rect x="670" y="100" width="180" height="36" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="760" y="123" text-anchor="middle" fill="#c9d1d9" font-size="11">Bidi Audio Streaming</text>
+  <rect x="670" y="148" width="180" height="30" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="760" y="168" text-anchor="middle" fill="#c9d1d9" font-size="11">Transcription + Barge-in</text>
+
+  <!-- Gemini Flash box -->
+  <rect x="650" y="220" width="220" height="110" rx="12" fill="#f0883e15" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="760" y="245" text-anchor="middle" fill="#f0883e" font-size="13" font-weight="600">Gemini 2.0 Flash</text>
+  <rect x="670" y="258" width="180" height="30" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="760" y="278" text-anchor="middle" fill="#c9d1d9" font-size="11">NVC Coaching Generation</text>
+  <rect x="670" y="296" width="180" height="24" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="760" y="313" text-anchor="middle" fill="#8b949e" font-size="9">8-12 word contextual whispers</text>
+
+  <!-- Arrows: Browser → Cloud Run -->
+  <line x1="280" y1="118" x2="356" y2="118" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <text x="318" y="111" text-anchor="middle" fill="#8b949e" font-size="8">audio + rms</text>
+
+  <!-- Arrows: Cloud Run → Browser -->
+  <line x1="356" y1="135" x2="280" y2="165" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <text x="310" y="156" text-anchor="middle" fill="#8b949e" font-size="8">tension, whisper, transcript</text>
+
+  <!-- Arrows: Cloud Run → Gemini Live -->
+  <line x1="574" y1="118" x2="666" y2="118" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <text x="620" y="111" text-anchor="middle" fill="#8b949e" font-size="8">PCM16 audio</text>
+
+  <!-- Arrows: Gemini Live → Cloud Run -->
+  <line x1="666" y1="160" x2="574" y2="160" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <text x="620" y="153" text-anchor="middle" fill="#8b949e" font-size="8">transcript deltas</text>
+
+  <!-- Arrows: Whisper Loop → Gemini Flash -->
+  <line x1="574" y1="243" x2="666" y2="270" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <text x="610" y="248" text-anchor="middle" fill="#8b949e" font-size="8">context</text>
+
+  <!-- Arrows: Gemini Flash → Whisper Loop -->
+  <line x1="666" y1="300" x2="574" y2="260" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <text x="610" y="290" text-anchor="middle" fill="#8b949e" font-size="8">whisper</text>
+
+  <!-- Arrows: Tension → Whisper -->
+  <line x1="465" y1="200" x2="465" y2="206" stroke="#3fb950" stroke-width="1" marker-end="url(#arrow-green)"/>
+
+  <!-- Legend -->
+  <rect x="30" y="350" width="840" height="150" rx="10" fill="#161b22" stroke="#21262d"/>
+  <text x="50" y="375" fill="#f0f6fc" font-size="13" font-weight="600">How It Works</text>
+
+  <circle cx="55" cy="398" r="5" fill="#58a6ff"/>
+  <text x="68" y="402" fill="#c9d1d9" font-size="10">1. Browser captures mic audio, resamples to 16kHz PCM16 mono, sends via WebSocket</text>
+
+  <circle cx="55" cy="420" r="5" fill="#3fb950"/>
+  <text x="68" y="424" fill="#c9d1d9" font-size="10">2. Backend scores tension (0-100) from RMS volume, silence duration, and interruption overlap</text>
+
+  <circle cx="55" cy="442" r="5" fill="#f0883e"/>
+  <text x="68" y="446" fill="#c9d1d9" font-size="10">3. Gemini Live transcribes speech in real-time; supports barge-in (user interrupts agent)</text>
+
+  <circle cx="55" cy="464" r="5" fill="#f0883e"/>
+  <text x="68" y="468" fill="#c9d1d9" font-size="10">4. When a trigger fires, Gemini Flash generates a contextual NVC coaching whisper (8-12 words)</text>
+
+  <circle cx="55" cy="486" r="5" fill="#58a6ff"/>
+  <text x="68" y="490" fill="#c9d1d9" font-size="10">5. Browser displays whisper and speaks it aloud via Web Speech API (soft, gentle voice)</text>
+</svg>

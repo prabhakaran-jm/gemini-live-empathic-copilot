@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.coaching import COACHING_MOVES, get_move_by_id
+from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
@@ -58,6 +58,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     tension_history: list[tuple[float, int]] = []
     last_whisper_ts: float = 0.0
     interrupted_events: list[float] = []
+    transcript_buffer: list[str] = []
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -114,6 +115,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 elif ev.kind == "agent_output_stopped":
                     agent_output_started = False
                 elif ev.kind == "transcript_delta" and ev.text:
+                    transcript_buffer.append(ev.text)
                     await send_json(
                         websocket,
                         {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
@@ -135,28 +137,34 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 return
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
-            move_entry = None
+            trigger = None
             # (a) Tension crossed upward into >=40
             if prev_tension_score < 40 and last_tension_score >= 40:
-                move_entry = get_move_by_id("slow_down")
+                trigger = "tension_cross"
             # (b) Overlap heuristic: high interruption rate in last 5s
-            if move_entry is None:
+            if trigger is None:
                 recent = [t for t in interrupted_events if now - t <= OVERLAP_WINDOW_SEC]
                 if len(recent) >= OVERLAP_MIN_COUNT:
-                    move_entry = get_move_by_id("reflect_back")
+                    trigger = "barge_in"
             # (c) Silence >2.5s and tension was >=70 in last 10s
-            if move_entry is None and tension_state.silence_start is not None:
+            if trigger is None and tension_state.silence_start is not None:
                 silence_sec = now - tension_state.silence_start
                 if silence_sec >= SILENCE_THRESHOLD_SEC:
                     high_in_window = any(s >= 70 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
                     if high_in_window:
-                        move_entry = get_move_by_id("clarify_intent")
-            if move_entry is not None:
+                        trigger = "post_escalation_silence"
+            if trigger is not None:
                 last_whisper_ts = now
                 prev_tension_score = last_tension_score
+                transcript_text = "".join(transcript_buffer)
+                coaching_result = await generate_coaching(
+                    trigger=trigger,
+                    tension_score=last_tension_score,
+                    transcript_buffer=transcript_text,
+                )
                 await send_json(
                     websocket,
-                    {"type": "whisper", "text": move_entry["text"], "move": move_entry["move"], "ts": int(now * 1000)},
+                    {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
                 )
 
     async def mock_loop() -> None:

@@ -5,11 +5,27 @@ import './App.css'
 
 const MAX_TRANSCRIPT_LEN = 2000
 
+function speakWhisper(text) {
+  if (!('speechSynthesis' in window)) return
+  window.speechSynthesis.cancel()
+  const utterance = new SpeechSynthesisUtterance(text)
+  utterance.rate = 0.85
+  utterance.pitch = 0.9
+  utterance.volume = 0.6
+  const voices = window.speechSynthesis.getVoices()
+  const preferred = voices.find(v =>
+    v.name.includes('Samantha') || v.name.includes('Google UK English Female')
+  )
+  if (preferred) utterance.voice = preferred
+  window.speechSynthesis.speak(utterance)
+}
+
 export default function App() {
   const [sessionActive, setSessionActive] = useState(false)
   const [tension, setTension] = useState(0)
   const [whisper, setWhisper] = useState(null)
   const [logs, setLogs] = useState([])
+  const [showLogs, setShowLogs] = useState(false)
   const [liveRms, setLiveRms] = useState(0)
   const [transcript, setTranscript] = useState('')
   const captureRef = useRef(null)
@@ -33,6 +49,7 @@ export default function App() {
       addLog('in', { type: 'tension', score: msg.score })
     } else if (msg.type === 'whisper') {
       setWhisper({ text: msg.text, move: msg.move })
+      speakWhisper(msg.text)
       addLog('in', { type: 'whisper', text: msg.text, move: msg.move })
     } else if (msg.type === 'stopped') {
       setSessionActive(false)
@@ -53,6 +70,13 @@ export default function App() {
     onOutbound,
     useMock: import.meta.env.VITE_USE_MOCK_WS === 'true',
   })
+
+  // Auto-dismiss whisper after 8 seconds
+  useEffect(() => {
+    if (!whisper) return
+    const timer = setTimeout(() => setWhisper(null), 8000)
+    return () => clearTimeout(timer)
+  }, [whisper])
 
   // When session is ready and not mock: start mic capture and stream audio chunks over WS
   useEffect(() => {
@@ -99,6 +123,7 @@ export default function App() {
   }
 
   const handleStop = () => {
+    window.speechSynthesis?.cancel()
     if (captureRef.current) {
       captureRef.current.stop()
       captureRef.current = null
@@ -120,50 +145,49 @@ export default function App() {
     <div className="app">
       <header className="header">
         <h1>Empathic Co-Pilot</h1>
-        <p className="subtitle">Live tension + coaching whispers (MVP)</p>
+        <p className="subtitle">Real-time conversation coaching, whispered when it matters</p>
         {!useMock && (
           <p className="backend-indicator" aria-label="Backend source">
-            Backend: {backendSource === 'cloudrun' ? 'Cloud Run' : 'Local'}
+            {backendSource === 'cloudrun' ? 'Cloud Run' : 'Local'}
           </p>
         )}
       </header>
 
       <section className="controls">
         {!sessionActive ? (
-          <button className="btn btn-start" onClick={handleStart} disabled={connected && sessionActive}>
-            Start session
-          </button>
+          <>
+            <button className="btn btn-start" onClick={handleStart} disabled={connected && sessionActive}>
+              Start session
+            </button>
+            <p className="onboarding-text">
+              Start a session, then have your conversation. The co-pilot listens and whispers
+              coaching when tension rises.
+            </p>
+          </>
         ) : (
-          <button className="btn btn-stop" onClick={handleStop}>
-            Stop session
-          </button>
+          <>
+            <button className="btn btn-stop" onClick={handleStop}>
+              Stop session
+            </button>
+            <div className="listening-indicator">
+              <span className="listening-dot" />
+              <span>Listening...</span>
+            </div>
+          </>
         )}
         {lastError && <span className="error">{lastError}</span>}
       </section>
 
-      <section className="tension-section">
-        <div className="tension-label">
-          <span>Tension</span>
-          <span className="tension-value">{tension}</span>
-        </div>
-        <div className="tension-bar-wrap">
-          <div
-            className="tension-bar"
-            style={{ width: `${Math.min(100, Math.max(0, tension))}%` }}
-          />
-        </div>
-      </section>
-
-      {!useMock && (
-        <section className="rms-section" aria-label="Live mic level">
-          <div className="rms-label">
-            <span>Mic (RMS)</span>
-            <span className="rms-value">{liveRms.toFixed(2)}</span>
+      {sessionActive && (
+        <section className="tension-section">
+          <div className="tension-label">
+            <span>Tension</span>
+            <span className="tension-value">{tension}</span>
           </div>
-          <div className="rms-bar-wrap">
+          <div className="tension-bar-wrap">
             <div
-              className="rms-bar"
-              style={{ width: `${Math.min(100, Math.max(0, liveRms * 100))}%` }}
+              className="tension-bar"
+              style={{ width: `${Math.min(100, Math.max(0, tension))}%` }}
             />
           </div>
         </section>
@@ -177,24 +201,28 @@ export default function App() {
       )}
 
       {whisper && (
-        <section className="whisper-box">
+        <section className="whisper-box" key={whisper.text}>
           <div className="whisper-move">{whisper.move}</div>
           <div className="whisper-text">"{whisper.text}"</div>
         </section>
       )}
 
       <section className="logs-section">
-        <h2>Event log</h2>
-        <div className="logs-list">
-          {logs.length === 0 && <div className="logs-empty">No events yet. Start a session.</div>}
-          {logs.map((entry) => (
-            <div key={entry.id} className={`log-entry log-${entry.direction}`}>
-              <span className="log-ts">{entry.ts}</span>
-              <span className="log-dir">{entry.direction === 'in' ? '←' : '→'}</span>
-              <span className="log-text">{entry.text}</span>
-            </div>
-          ))}
-        </div>
+        <button className="logs-toggle" onClick={() => setShowLogs(s => !s)}>
+          {showLogs ? 'Hide' : 'Show'} event log ({logs.length})
+        </button>
+        {showLogs && (
+          <div className="logs-list">
+            {logs.length === 0 && <div className="logs-empty">No events yet.</div>}
+            {logs.map((entry) => (
+              <div key={entry.id} className={`log-entry log-${entry.direction}`}>
+                <span className="log-ts">{entry.ts}</span>
+                <span className="log-dir">{entry.direction === 'in' ? '\u2190' : '\u2192'}</span>
+                <span className="log-text">{entry.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   )
