@@ -33,7 +33,7 @@ Our backend speaks this protocol with the browser and (separately) with Gemini L
 |------------------|--------------------------|---------|
 | `ready`          | Session ready            | `{}` |
 | `tension`        | Updated tension score    | `{ "score": number 0–100, "ts": number }` |
-| `transcript`     | Live transcript delta    | `{ "delta": string, "ts": number }` |
+| `transcript`     | Live transcript update   | `{ "delta": string, "full": string, "ts": number }` — use `full` when present for cumulative text; otherwise append `delta`. |
 | `whisper`        | Coaching whisper (text)   | `{ "text": string, "move": string, "ts": number }` |
 | `error`          | Error                    | `{ "message": string }` |
 | `event`          | Client event (e.g. barge-in) | `{ "name": string, "ts": number }` e.g. `name: "interrupted"` |

@@ -119,9 +119,15 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     agent_output_started = False
                 elif ev.kind in ("transcript_delta", "user_transcript_delta") and ev.text:
                     transcript_buffer.append(ev.text)
+                    full_text = "".join(transcript_buffer)
                     await send_json(
                         websocket,
-                        {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
+                        {
+                            "type": "transcript",
+                            "delta": ev.text,
+                            "full": full_text,
+                            "ts": int(time.time() * 1000),
+                        },
                     )
                 elif ev.kind == "error":
                     await send_json(websocket, {"type": "error", "message": ev.message or ev.text})

@@ -13,6 +13,7 @@ $ServiceName = if ($env:CLOUD_RUN_SERVICE_NAME) { $env:CLOUD_RUN_SERVICE_NAME } 
 $GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-live-2.5-flash-native-audio" }
 $BargeInRms = if ($env:BARGE_IN_RMS_THRESHOLD) { $env:BARGE_IN_RMS_THRESHOLD } else { "0.15" }
 $TensionWhisperThreshold = if ($env:TENSION_WHISPER_THRESHOLD) { $env:TENSION_WHISPER_THRESHOLD } else { "24" }
+$CoachingGrounding = if ($env:COACHING_GROUNDING) { $env:COACHING_GROUNDING } else { "0" }
 
 if (-not $ProjectId) {
     Write-Error "Usage: .\deploy.ps1 -ProjectId PROJECT_ID [-Region REGION]"
@@ -44,7 +45,7 @@ gcloud run deploy $ServiceName `
   --timeout 3600 `
   --concurrency 10 `
   --min-instances 1 `
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding"
 
 $ServiceUrl = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(status.url)"
 $SaEmail = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(spec.template.spec.serviceAccountName)"

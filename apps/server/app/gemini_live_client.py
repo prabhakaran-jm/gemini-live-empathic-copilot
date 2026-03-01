@@ -166,15 +166,42 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                         sc, "input_audio_transcription", None
                     )
                     if input_tx:
+                        # Single text field (use only if parts not present to avoid duplicate)
                         tx_text = (
                             getattr(input_tx, "text", None)
                             or getattr(input_tx, "transcript", None)
                             or (getattr(input_tx, "content", None) if isinstance(getattr(input_tx, "content", None), str) else None)
                         )
-                        if tx_text:
+                        parts = getattr(input_tx, "parts", None)
+                        if parts and isinstance(parts, (list, tuple)):
+                            for part in parts:
+                                p_text = getattr(part, "text", None) or getattr(part, "content", None)
+                                if p_text:
+                                    pt = p_text if isinstance(p_text, str) else str(p_text)
+                                    logger.debug("Live transcript (part): %s", pt[:80] + "..." if len(pt) > 80 else pt)
+                                    self._event_queue.put_nowait(
+                                        LiveEvent(kind="user_transcript_delta", text=pt)
+                                    )
+                        elif tx_text:
+                            ev_text = tx_text if isinstance(tx_text, str) else str(tx_text)
+                            logger.debug("Live transcript (single): %s", ev_text[:80] + "..." if len(ev_text) > 80 else ev_text)
                             self._event_queue.put_nowait(
-                                LiveEvent(kind="user_transcript_delta", text=tx_text if isinstance(tx_text, str) else str(tx_text))
+                                LiveEvent(kind="user_transcript_delta", text=ev_text)
                             )
+                    # Fallback: try other known names for input transcription (SDK/API variants)
+                    for attr in ("realtime_input_transcription", "realtime_input_audio_transcription"):
+                        input_tx_alt = getattr(sc, attr, None)
+                        if input_tx_alt and input_tx_alt is not input_tx:
+                            alt_text = (
+                                getattr(input_tx_alt, "text", None)
+                                or getattr(input_tx_alt, "transcript", None)
+                                or (getattr(input_tx_alt, "content", None) if isinstance(getattr(input_tx_alt, "content", None), str) else None)
+                            )
+                            if alt_text:
+                                self._event_queue.put_nowait(
+                                    LiveEvent(kind="user_transcript_delta", text=alt_text if isinstance(alt_text, str) else str(alt_text))
+                                )
+                                break
                     # --- model_turn text parts (non-native models, or model responses) ---
                     mt = getattr(sc, "model_turn", None)
                     if mt and getattr(mt, "parts", None):

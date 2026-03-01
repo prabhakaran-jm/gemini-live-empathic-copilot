@@ -78,6 +78,8 @@ When not using mock mode, **Start session** will request browser microphone perm
 - **RMS:** The frontend computes RMS per chunk (0–1) and sends it in `telemetry.rms`; the **Mic (RMS)** bar in the UI helps calibrate input level.
 - **HTTPS / localhost:** `getUserMedia` requires a secure context (https or localhost). For local dev, use `http://localhost:5173`.
 
+**Live transcript:** Transcription comes from the Gemini Live API (`input_audio_transcription`). It may appear in chunks or after short pauses; if you see only "Listening…" or the first few words, try speaking clearly with brief pauses between phrases. To confirm the backend is receiving transcript events, run the server with `LOG_LEVEL=DEBUG` and watch for "Live transcript" log lines.
+
 ---
 
 ## Files created (initial layout)
