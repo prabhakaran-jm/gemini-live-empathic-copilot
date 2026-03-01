@@ -22,8 +22,9 @@ Our backend speaks this protocol with the browser and (separately) with Gemini L
 
 | `type`        | Description        | Payload |
 |---------------|--------------------|---------|
-| `start`       | Start session      | `{}` or optional `{ "config": {} }` |
+| `start`       | Start session      | `{}` or optional `{ "config": { "image": "<base64 JPEG>" } }` for initial webcam frame (vision). |
 | `stop`        | End session        | `{}` |
+| `frame`       | Webcam frame (vision) | `{ "base64": "<base64 JPEG>" }` — optional; used for vision-aware coaching. |
 | `audio`       | Raw audio chunk    | `{ "base64": "<base64 PCM>" }` (e.g. 16 kHz, 16-bit mono). Optional: `telemetry`: `{ "rms": number }`. |
 
 ### Server → Client (backend sends)
@@ -91,9 +92,9 @@ S→C: { "type": "ready" }
 S→C: { "type": "tension", "score": 42, "ts": 1730000000000 }
 ```
 
-**Whisper**
+**Whisper** (move is the trigger that fired: tension_cross, barge_in, post_escalation_silence, or fallback move id)
 ```json
-S→C: { "type": "whisper", "text": "It sounds like this is really important to you right now.", "move": "reflect_back", "ts": 1730000001000 }
+S→C: { "type": "whisper", "text": "Taking a breath before the next sentence can help.", "move": "tension_cross", "ts": 1730000001000 }
 ```
 
 **Stop**

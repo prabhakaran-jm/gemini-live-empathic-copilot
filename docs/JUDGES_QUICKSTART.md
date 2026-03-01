@@ -49,7 +49,7 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
 
 ## Option B: Deploy your own backend
 
-Follow [docs/CLOUD_RUN_DEPLOY.md](CLOUD_RUN_DEPLOY.md) to build and deploy the server to Cloud Run. Then use Option A steps 2–4 with your own Cloud Run URL.
+Follow [DEPLOY.md](DEPLOY.md) to build and deploy the server (and optionally the frontend) to Cloud Run. Then use Option A steps 2–4 with your own Cloud Run URL.
 
 ---
 
@@ -85,6 +85,6 @@ Follow [docs/CLOUD_RUN_DEPLOY.md](CLOUD_RUN_DEPLOY.md) to build and deploy the s
 |-------|-------------|
 | **No microphone** | Allow mic in browser (site settings or prompt). Use HTTPS or localhost. Check that no other app has exclusive access. |
 | **WebSocket fails / wrong backend** | If using Cloud Run: set `VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` (not `https`). Restart `npm run dev` after changing env. Check browser console for WS errors. |
-| **403 or Vertex / Gemini errors** | Backend may lack Vertex AI permissions. On Cloud Run, the service account needs e.g. "Vertex AI User". See [CLOUD_RUN_DEPLOY.md](CLOUD_RUN_DEPLOY.md); deploy script prints the service account to grant. For local dev with API key, ensure `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY` is set. |
+| **403 or Vertex / Gemini errors** | Backend may lack Vertex AI permissions. On Cloud Run, the service account needs e.g. "Vertex AI User". See [DEPLOY.md](DEPLOY.md); deploy script prints the service account to grant. For local dev with API key, ensure `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY` is set. |
 | **No transcript, "Gemini unavailable" message** | Backend is in degraded mode (Gemini connect failed). You still get tension + whispers. Check backend logs and Vertex/API key configuration. |
 | **Nothing happens on Start** | Confirm `/health` returns 200 for the backend you’re using. Check Event log for `ready` or `error` messages. Ensure WS URL is correct (e.g. `wss://` for HTTPS Cloud Run). |

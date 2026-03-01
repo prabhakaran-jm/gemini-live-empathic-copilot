@@ -140,7 +140,7 @@ The script opens a Live session, sends ~1s of silent PCM16 16 kHz in chunks, and
 ### Verify real mode (MOCK off)
 
 1. **Transcript:** Start session (real backend, no `MOCK=1`), allow mic, speak. The **Live Transcript** panel should append text as the model transcribes. Event log stays separate (no transcript flooding).
-2. **Whispers:** Deterministic triggers (12s cooldown): (a) tension crosses up into ≥40 → *slow_down*; (b) ≥2 barge-in events in last 5s → *reflect_back*; (c) silence >2.5s and tension was ≥70 in last 10s → *clarify_intent*. Run a scripted scenario (e.g. speak, then stay silent >2.5s after a tense moment) to see a whisper.
+2. **Whispers:** Deterministic triggers (12s cooldown): (a) tension crosses up into ≥ threshold (default 24) → *slow_down*; (b) ≥2 barge-in events in last 5s → *reflect_back*; (c) silence >2.5s and tension was ≥70 in last 10s → *clarify_intent*. Run a scripted scenario (e.g. speak, then stay silent >2.5s after a tense moment) to see a whisper.
 3. **Barge-in:** While the agent is speaking (transcript or TTS), talk over it; the **Event log** should show an `event` `interrupted` entry, and the agent should stop.
 
 ---

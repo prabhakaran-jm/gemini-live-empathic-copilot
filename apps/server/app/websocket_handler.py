@@ -61,6 +61,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     last_whisper_ts: float = 0.0
     interrupted_events: list[float] = []
     transcript_buffer: list[str] = []
+    latest_frame_base64: str | None = None  # optional webcam frame for vision-aware coaching
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -163,6 +164,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     trigger=trigger,
                     tension_score=last_tension_score,
                     transcript_buffer=transcript_text,
+                    image_base64=latest_frame_base64,
                 )
                 await send_json(
                     websocket,
@@ -201,6 +203,11 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 if session is not None:
                     await send_json(websocket, {"type": "error", "message": "Already started"})
                     continue
+                # Optional: initial webcam frame for vision-aware coaching
+                config = msg.get("config") or {}
+                if isinstance(config, dict):
+                    img = (config.get("image") or "").strip()
+                    latest_frame_base64 = img if img else None
                 await send_json(websocket, {"type": "ready"})
                 if not MOCK_MODE:
                     try:
@@ -261,6 +268,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         pass
                 await send_json(websocket, {"type": "stopped"})
                 break
+            elif t == "frame":
+                # Optional: update webcam frame for vision-aware coaching (base64 JPEG)
+                b64 = (msg.get("base64") or msg.get("image") or "").strip()
+                latest_frame_base64 = b64 if b64 else latest_frame_base64
             elif t == "audio":
                 base64_audio = (msg.get("base64") or "").strip()
                 if not base64_audio:

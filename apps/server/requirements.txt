@@ -5,3 +5,7 @@ websockets>=14.0
 
 # Gemini Live API (real client; optional when MOCK=1)
 google-genai>=1.0.0
+
+# Tests
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

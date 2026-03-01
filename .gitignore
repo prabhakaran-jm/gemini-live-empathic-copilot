@@ -204,6 +204,9 @@ cython_debug/
 # Node
 node_modules/
 
+# Firebase (Hosting cache, etc.)
+.firebase/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

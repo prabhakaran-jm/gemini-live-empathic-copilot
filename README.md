@@ -36,7 +36,7 @@ Full steps: [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md).
 🎧 Whisper-style short coaching prompts  
 ☁ Hosted on Google Cloud (Cloud Run + Vertex AI)
 
-**What's implemented in MVP (locked scope):** WebSocket session start/stop; mic → PCM 16 kHz → backend; tension score from RMS/silence/overlap; deterministic whisper rules (tension cross → slow_down, 2× barge-in → reflect_back, post-escalation silence → clarify_intent); live transcript via Gemini Live; barge-in detection and `event: interrupted`; degraded mode when Gemini is unavailable (tension + whispers only); Cloud Run deploy with health check; frontend backend indicator (Local / Cloud Run).
+**What's implemented in MVP (locked scope):** WebSocket session start/stop; mic → PCM 16 kHz → backend; tension score from RMS/silence/overlap; deterministic whisper rules (tension cross → slow_down, 2× barge-in → reflect_back, post-escalation silence → clarify_intent); live transcript via Gemini Live; barge-in detection and `event: interrupted`; degraded mode when Gemini is unavailable (tension + whispers only); Cloud Run deploy with health check; frontend backend indicator (Local / Cloud Run). **Optional:** webcam (vision) for context-aware coaching; Google Search grounding for coaching (env `COACHING_GROUNDING=1`).
 
 **Degraded mode:** If Gemini Live connect fails (auth, quota, or model error), the session does not fail. The backend runs in "local-only" mode: tension updates and the whisper loop keep running; transcript streaming is disabled. The client receives one `error` message: "Gemini unavailable; running local coaching only." Stop/cleanup works as usual.
 
@@ -94,7 +94,7 @@ The script builds the container (Cloud Build), deploys to Cloud Run with WebSock
 
 **Connect the frontend:** Set `VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` when running or building the web app so it uses the deployed backend.
 
-See [docs/CLOUD_RUN_DEPLOY.md](docs/CLOUD_RUN_DEPLOY.md) for copy-paste steps and smoke test. **Full stack (backend + frontend):** [docs/DEPLOY.md](docs/DEPLOY.md).
+See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) and smoke test.
 
 ---
 
@@ -118,10 +118,8 @@ See [docs/CLOUD_RUN_DEPLOY.md](docs/CLOUD_RUN_DEPLOY.md) for copy-paste steps an
 
 ## Docs for judges
 
-- [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md) – 1-minute path: health check, run frontend, test script, troubleshooting.
-- [docs/CLOUD_RUN_DEPLOY.md](docs/CLOUD_RUN_DEPLOY.md) – Deploy steps and smoke test.
-- [docs/PROOF_OF_DEPLOYMENT.md](docs/PROOF_OF_DEPLOYMENT.md) – Checklist for the proof video (Cloud Run service, logs, `/health`, UI → Cloud Run WebSocket).
-- [docs/proof/PROOF_VIDEO.md](docs/proof/PROOF_VIDEO.md) – Step-by-step what to record and proof asset placeholders (e.g. `architecture.png`, `cloudrun_logs.png`).
+- [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md) – Health check, run frontend, test script, troubleshooting.
+- [docs/DEPLOY.md](docs/DEPLOY.md) – Deploy backend + frontend, smoke test.
 
 ---
 

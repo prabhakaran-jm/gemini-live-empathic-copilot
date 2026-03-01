@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from './useWebSocket'
 import { startAudioCapture } from './audioCapture'
+import { useWebcam, CAPTURE_INTERVAL_MS } from './useWebcam'
 import './App.css'
 
 const MAX_TRANSCRIPT_LEN = 2000
@@ -28,7 +29,10 @@ export default function App() {
   const [showLogs, setShowLogs] = useState(false)
   const [liveRms, setLiveRms] = useState(0)
   const [transcript, setTranscript] = useState('')
+  const [useVision, setUseVision] = useState(false)
   const captureRef = useRef(null)
+  const webcam = useWebcam()
+  const frameIntervalRef = useRef(null)
 
   const addLog = useCallback((direction, msg) => {
     const entry = {
@@ -122,12 +126,47 @@ export default function App() {
     }
   }, [sessionActive, useMock, send, addLog])
 
-  const handleStart = () => {
-    connect()
+  // When session is active and vision enabled: send webcam frame periodically for vision-aware coaching
+  useEffect(() => {
+    if (!sessionActive || useMock || !useVision || !webcam.active) return
+    const id = setInterval(() => {
+      const frame = webcam.captureFrame()
+      if (frame) send({ type: 'frame', base64: frame })
+    }, CAPTURE_INTERVAL_MS)
+    frameIntervalRef.current = id
+    return () => {
+      clearInterval(id)
+      frameIntervalRef.current = null
+    }
+  }, [sessionActive, useMock, useVision, webcam.active, webcam.captureFrame, send])
+
+  const handleStart = async () => {
+    if (useVision) {
+      const ok = await webcam.start()
+      if (!ok) {
+        addLog('in', { type: 'error', message: 'Webcam: ' + (webcam.error || 'denied') })
+        return
+      }
+      // Let first frame be ready
+      await new Promise((r) => setTimeout(r, 600))
+      const frame = webcam.captureFrame()
+      if (frame) {
+        connect({ image: frame })
+      } else {
+        connect()
+      }
+    } else {
+      connect()
+    }
   }
 
   const handleStop = () => {
     window.speechSynthesis?.cancel()
+    if (frameIntervalRef.current) {
+      clearInterval(frameIntervalRef.current)
+      frameIntervalRef.current = null
+    }
+    if (useVision && webcam.active) webcam.stop()
     if (captureRef.current) {
       captureRef.current.stop()
       captureRef.current = null
@@ -153,9 +192,23 @@ export default function App() {
         )}
       </header>
 
+      {/* Hidden video for webcam capture (vision); only needs to be in DOM when useVision is on */}
+      {useVision && <video ref={webcam.videoRef} muted playsInline autoPlay style={{ display: 'none' }} />}
+
       <section className="controls">
         {!sessionActive ? (
           <>
+            {!useMock && (
+              <label className="vision-toggle">
+                <input
+                  type="checkbox"
+                  checked={useVision}
+                  onChange={(e) => setUseVision(e.target.checked)}
+                  aria-label="Include webcam for vision-aware coaching"
+                />
+                <span>Include webcam (vision)</span>
+              </label>
+            )}
             <button className="btn btn-start" onClick={handleStart} disabled={connected && sessionActive}>
               Start session
             </button>

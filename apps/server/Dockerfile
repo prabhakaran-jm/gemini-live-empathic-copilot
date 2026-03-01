@@ -3,6 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Unbuffered output so Cloud Run logs show crashes immediately
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
+
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -11,9 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY run.py .
 
-# Cloud Run sets PORT at runtime; bind to 0.0.0.0
-ENV PORT=8080
+# Verify app imports (surfaces import errors at build time)
+RUN python -c "from app.main import app; print('app OK')"
+
 EXPOSE 8080
 
-# Single process: uvicorn (no reload in production)
+# Cloud Run sets PORT at runtime; bind to 0.0.0.0
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

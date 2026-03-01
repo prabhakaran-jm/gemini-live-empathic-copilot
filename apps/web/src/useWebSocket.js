@@ -88,13 +88,16 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
   onMessageRef.current = onMessage
   onOutboundRef.current = onOutbound
 
-  const connect = useCallback(() => {
+  const connect = useCallback((initialStartConfig = null) => {
+    const startPayload = initialStartConfig && typeof initialStartConfig === 'object'
+      ? { type: 'start', config: initialStartConfig }
+      : { type: 'start' }
     if (useMock) {
       const mock = createMockWebSocket((msg) => onMessageRef.current?.(msg))
       wsRef.current = mock
       setConnected(true)
       setLastError(null)
-      onOutboundRef.current?.({ type: 'start' })
+      onOutboundRef.current?.(startPayload)
       return
     }
     const url = getWsUrl()
@@ -102,9 +105,8 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
     ws.onopen = () => {
       setConnected(true)
       setLastError(null)
-      const startMsg = { type: 'start' }
-      ws.send(JSON.stringify(startMsg))
-      onOutboundRef.current?.(startMsg)
+      ws.send(JSON.stringify(startPayload))
+      onOutboundRef.current?.(startPayload)
     }
     ws.onclose = () => setConnected(false)
     ws.onerror = () => setLastError('WebSocket error')

@@ -37,6 +37,17 @@
   margin-bottom: 2rem;
 }
 
+.vision-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #8b949e;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.vision-toggle input { cursor: pointer; }
+
 .btn {
   padding: 0.75rem 2rem;
   font-size: 1.05rem;

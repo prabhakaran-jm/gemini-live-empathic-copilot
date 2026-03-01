@@ -12,7 +12,7 @@ graph TB
     subgraph CloudRun ["Google Cloud Run (FastAPI)"]
         WS["WebSocket /ws"]
         TL["Tension Loop<br/>RMS + Silence + Overlap → 0-100"]
-        WL["Whisper Loop<br/>Triggers: tension ≥40,<br/>2+ barge-ins, post-escalation silence"]
+        WL["Whisper Loop<br/>Triggers: tension ≥threshold (24),<br/>2+ barge-ins, post-escalation silence"]
     end
 
     subgraph GCP ["Google Cloud AI"]
@@ -40,7 +40,7 @@ graph TB
 | **Browser (React/Vite)** | Captures mic audio (PCM16 16kHz), sends base64 chunks + RMS telemetry via WebSocket. Displays tension bar, live transcript, coaching whispers. Speaks whispers aloud via Web Speech API. |
 | **Cloud Run (FastAPI)** | Accepts WebSocket at `/ws`. Runs tension scoring loop (RMS, silence, overlap → 0-100). Runs whisper loop with 3 deterministic triggers. Streams audio to Gemini Live for transcription. Calls Gemini Flash for AI-generated coaching. |
 | **Gemini Live API** | Real-time bidirectional audio streaming. Provides transcript deltas and supports barge-in (stop generation when user interrupts). |
-| **Gemini 2.0 Flash** | Generates contextual 8-12 word coaching whispers grounded in NVC (Nonviolent Communication) and active listening. Called on-demand when tension triggers fire. Falls back to fixed phrases if unavailable. |
+| **Gemini 2.0 Flash** | Generates contextual 8-12 word coaching whispers grounded in NVC (Nonviolent Communication) and active listening. Called on-demand when tension triggers fire. Optional: Google Search grounding (env `COACHING_GROUNDING=1`) and vision (webcam frame as context). Falls back to fixed phrases if unavailable. |
 
 ## Data Flow
 
@@ -53,6 +53,6 @@ graph TB
 
 ## Deployment
 
-- **Backend:** Single container on Cloud Run (see [CLOUD_RUN_DEPLOY.md](./CLOUD_RUN_DEPLOY.md)). Uses ADC for Vertex AI or API key.
+- **Backend:** Single container on Cloud Run (see [DEPLOY.md](./DEPLOY.md)). Uses ADC for Vertex AI or API key.
 - **Frontend:** Static build (`npm run build`). Set `VITE_WS_URL=wss://YOUR_SERVICE_URL/ws` to target Cloud Run.
 - **IaC:** Deployment scripts at `infra/cloudrun/deploy.sh` (Bash) and `deploy.ps1` (PowerShell).
