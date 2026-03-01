@@ -1,16 +1,16 @@
 # Deploy Empathic Co-Pilot backend to Cloud Run.
 # Usage: .\deploy.ps1 [-ProjectId PROJECT_ID] [-Region REGION]
-# Example: .\deploy.ps1 -ProjectId my-project -Region us-central1
+# Example: .\deploy.ps1 -ProjectId my-project -Region europe-west1
 
 param(
     [string]$ProjectId = $env:GOOGLE_CLOUD_PROJECT,
     [string]$Region = $env:GOOGLE_CLOUD_REGION
 )
 
-if (-not $Region) { $Region = "us-central1" }
+if (-not $Region) { $Region = "europe-west1" }
 
 $ServiceName = if ($env:CLOUD_RUN_SERVICE_NAME) { $env:CLOUD_RUN_SERVICE_NAME } else { "empathic-copilot" }
-$GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-2.0-flash-exp" }
+$GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-live-2.5-flash-native-audio" }
 $BargeInRms = if ($env:BARGE_IN_RMS_THRESHOLD) { $env:BARGE_IN_RMS_THRESHOLD } else { "0.15" }
 
 if (-not $ProjectId) {

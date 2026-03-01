@@ -23,7 +23,7 @@ From the **repo root**:
 ```bash
 cd infra/cloudrun
 chmod +x deploy.sh
-./deploy.sh YOUR_PROJECT_ID us-central1
+./deploy.sh YOUR_PROJECT_ID europe-west1
 ```
 
 **PowerShell (Windows):**
@@ -35,7 +35,7 @@ cd infra\cloudrun
 Or set env and run without args:
 ```bash
 export GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID
-export GOOGLE_CLOUD_REGION=us-central1
+export GOOGLE_CLOUD_REGION=europe-west1
 ./deploy.sh
 ```
 
@@ -55,8 +55,8 @@ Set by the deploy script (override via env before running the script if needed):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | (from deploy) | GCP project ID (Vertex AI). |
-| `GOOGLE_CLOUD_REGION` | `us-central1` | Region for Vertex AI. |
-| `GEMINI_MODEL` | `gemini-2.0-flash-exp` | Gemini Live model. |
+| `GOOGLE_CLOUD_REGION` | `europe-west1` | Region for Vertex AI. |
+| `GEMINI_MODEL` | `gemini-live-2.5-flash-native-audio` | Gemini Live model. |
 | `BARGE_IN_RMS_THRESHOLD` | `0.15` | RMS threshold for barge-in. |
 
 **Auth on Cloud Run:** The service uses **Application Default Credentials** (ADC) in the Cloud Run environment, i.e. the service account of the Cloud Run service. Ensure that account has access to **Vertex AI** (e.g. "Vertex AI User" or appropriate role) in the same project.

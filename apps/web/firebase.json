@@ -1,0 +1,8 @@
+{
+  "hosting": {
+    "site": "gemini3-hackathon-2026-1ffa1",
+    "public": "dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+  }
+}

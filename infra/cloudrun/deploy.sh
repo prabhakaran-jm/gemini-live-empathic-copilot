@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy Empathic Co-Pilot backend to Cloud Run.
 # Usage: ./deploy.sh [PROJECT_ID] [REGION]
-# Example: ./deploy.sh my-project us-central1
+# Example: ./deploy.sh my-project europe-west1
 
 set -e
 
@@ -11,7 +11,7 @@ SERVER_DIR="$REPO_ROOT/apps/server"
 SERVICE_NAME="${CLOUD_RUN_SERVICE_NAME:-empathic-copilot}"
 
 PROJECT_ID="${1:-$GOOGLE_CLOUD_PROJECT}"
-REGION="${2:-${GOOGLE_CLOUD_REGION:-us-central1}}"
+REGION="${2:-${GOOGLE_CLOUD_REGION:-europe-west1}}"
 
 if [ -z "$PROJECT_ID" ]; then
   echo "Usage: $0 PROJECT_ID [REGION]"
@@ -43,12 +43,12 @@ gcloud run deploy "$SERVICE_NAME" \
   --timeout 3600 \
   --concurrency 10 \
   --min-instances 1 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_REGION=${REGION},GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash-exp},BARGE_IN_RMS_THRESHOLD=${BARGE_IN_RMS_THRESHOLD:-0.15}" \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_REGION=${REGION},GEMINI_MODEL=${GEMINI_MODEL:-gemini-live-2.5-flash-native-audio},BARGE_IN_RMS_THRESHOLD=${BARGE_IN_RMS_THRESHOLD:-0.15}" \
   "${EXTRA_FLAGS[@]}"
 
 SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 SA_EMAIL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --project "$PROJECT_ID" --format='value(spec.template.spec.serviceAccountName)')
-[ -z "$SA_EMAIL" ] && SA_EMAIL="(default compute SA)"
+[ -z "$SA_EMAIL" ] && SA_EMAIL="default compute SA"
 
 echo ""
 echo "Done. Service URL: $SERVICE_URL"

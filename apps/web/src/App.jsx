@@ -65,6 +65,10 @@ export default function App() {
     }
   }, [addLog])
 
+  const onOutbound = useCallback((msg) => {
+    addLog('out', msg)
+  }, [addLog])
+
   const { connected, lastError, connect, disconnect, send, useMock, backendSource } = useWebSocket({
     onMessage,
     onOutbound,
@@ -136,10 +140,6 @@ export default function App() {
     setSessionActive(false)
     setWhisper(null)
   }
-
-  const onOutbound = useCallback((msg) => {
-    addLog('out', msg)
-  }, [addLog])
 
   return (
     <div className="app">

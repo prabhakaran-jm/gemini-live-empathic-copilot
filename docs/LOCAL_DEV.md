@@ -39,8 +39,8 @@ Server runs at **http://localhost:8765**. WebSocket: **ws://localhost:8765/ws**.
 | Variable | Description |
 |---------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (for Vertex AI). |
-| `GOOGLE_CLOUD_REGION` | Region (default `us-central1`). |
-| `GEMINI_MODEL` | Model name (default `gemini-2.0-flash-exp`). |
+| `GOOGLE_CLOUD_REGION` | Region (default `europe-west1`). |
+| `GEMINI_MODEL` | Gemini Live model (default `gemini-live-2.5-flash-native-audio`). |
 | `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY` or `GOOGLE_API_KEY` | API key for Gemini Developer API (alternative to Vertex). |
 
 **Authentication:** Use either (1) **Vertex AI** with Application Default Credentials (ADC): set `GOOGLE_CLOUD_PROJECT` and optionally `GOOGLE_CLOUD_REGION`, and run where ADC is available (e.g. `gcloud auth application-default login`), or (2) **API key**: set one of the API key env vars above.
@@ -117,7 +117,7 @@ From `apps/server` with venv activated and credentials set:
 
 ```powershell
 $env:GOOGLE_CLOUD_PROJECT="your-project-id"
-$env:GOOGLE_CLOUD_REGION="us-central1"
+$env:GOOGLE_CLOUD_REGION="europe-west1"
 python -m scripts.smoke_test
 ```
 
