@@ -28,12 +28,12 @@ BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
 RMS_EMA_ALPHA = 0.2  # rms_ema = (1-alpha)*prev + alpha*current
 SILENCE_RMS_THRESHOLD = 0.05
 WHISPER_COOLDOWN_SEC = 12.0
+# Tension score at or above this triggers "slow_down" whisper (env TENSION_WHISPER_THRESHOLD, default 24)
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "24"))
 SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
-# Tension score at or above this triggers "slow_down" whisper (lower = more sensitive for quiet mics)
-TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "24"))
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -116,7 +116,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     agent_output_started = True
                 elif ev.kind == "agent_output_stopped":
                     agent_output_started = False
-                elif ev.kind == "transcript_delta" and ev.text:
+                elif ev.kind in ("transcript_delta", "user_transcript_delta") and ev.text:
                     transcript_buffer.append(ev.text)
                     await send_json(
                         websocket,
@@ -140,7 +140,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
             trigger = None
-            # (a) Tension crossed upward into threshold (default 25; set TENSION_WHISPER_THRESHOLD to tune)
+            # (a) Tension crossed upward into >= threshold
             if prev_tension_score < TENSION_WHISPER_THRESHOLD and last_tension_score >= TENSION_WHISPER_THRESHOLD:
                 trigger = "tension_cross"
             # (b) Overlap heuristic: high interruption rate in last 5s

@@ -26,7 +26,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMIN
 @dataclass
 class LiveEvent:
     """One event from the live session."""
-    kind: str  # "transcript_delta" | "agent_output_started" | "agent_output_stopped" | "error"
+    kind: str  # "transcript_delta" | "user_transcript_delta" | "agent_output_started" | "agent_output_stopped" | "error"
     text: str = ""
     message: str = ""
 
@@ -160,7 +160,8 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                 sc = getattr(msg, "server_content", None)
                 if sc is not None:
                     # --- input_audio_transcription results (native-audio models) ---
-                    # API may use input_transcription or input_audio_transcription; text may be .text or .transcript
+                    # User's speech transcribed; use user_transcript_delta so recv_events() won't treat as agent output.
+                    # API may use input_transcription or input_audio_transcription.
                     input_tx = getattr(sc, "input_transcription", None) or getattr(
                         sc, "input_audio_transcription", None
                     )
@@ -172,7 +173,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                         )
                         if tx_text:
                             self._event_queue.put_nowait(
-                                LiveEvent(kind="transcript_delta", text=tx_text if isinstance(tx_text, str) else str(tx_text))
+                                LiveEvent(kind="user_transcript_delta", text=tx_text if isinstance(tx_text, str) else str(tx_text))
                             )
                     # --- model_turn text parts (non-native models, or model responses) ---
                     mt = getattr(sc, "model_turn", None)
@@ -199,7 +200,11 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             self._event_queue.put_nowait(None)
 
     async def recv_events(self) -> AsyncIterator[LiveEvent]:
-        """Async iterator of events. Emit agent_output_started on first content, agent_output_stopped on turn complete."""
+        """Async iterator of events. Emit agent_output_started on first agent content, agent_output_stopped on turn complete.
+
+        user_transcript_delta events (from input_audio_transcription) pass through
+        without triggering agent_output_started — they are the user's own speech.
+        """
         agent_speaking = False
         while not self._closed:
             try:
@@ -210,6 +215,10 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                 break
             if ev is None:
                 return
+            # user_transcript_delta: pass through without agent-speaking logic
+            if ev.kind == "user_transcript_delta":
+                yield ev
+                continue
             if ev.kind == "transcript_delta" and not agent_speaking:
                 agent_speaking = True
                 yield LiveEvent(kind="agent_output_started")
