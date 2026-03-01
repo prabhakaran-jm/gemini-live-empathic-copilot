@@ -5,7 +5,6 @@ Grounded in Nonviolent Communication (NVC) and active listening principles.
 """
 import logging
 import os
-from typing import TypedDict
 
 logger = logging.getLogger(__name__)
 
