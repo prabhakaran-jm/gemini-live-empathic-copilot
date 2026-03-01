@@ -82,13 +82,13 @@ def _get_flash_client():
         _flash_client = genai.Client(
             vertexai=True,
             project=os.environ["GOOGLE_CLOUD_PROJECT"],
-            location=os.environ.get("GOOGLE_CLOUD_REGION", "us-central1"),
+            location=os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1"),
         )
     else:
         _flash_client = genai.Client(
             vertexai=True,
             project=os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
-            location=os.environ.get("GOOGLE_CLOUD_REGION", "us-central1"),
+            location=os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1"),
         )
     return _flash_client
 

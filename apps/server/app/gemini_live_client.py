@@ -160,12 +160,19 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                 sc = getattr(msg, "server_content", None)
                 if sc is not None:
                     # --- input_audio_transcription results (native-audio models) ---
-                    input_tx = getattr(sc, "input_transcription", None)
+                    # API may use input_transcription or input_audio_transcription; text may be .text or .transcript
+                    input_tx = getattr(sc, "input_transcription", None) or getattr(
+                        sc, "input_audio_transcription", None
+                    )
                     if input_tx:
-                        tx_text = getattr(input_tx, "text", None)
+                        tx_text = (
+                            getattr(input_tx, "text", None)
+                            or getattr(input_tx, "transcript", None)
+                            or (getattr(input_tx, "content", None) if isinstance(getattr(input_tx, "content", None), str) else None)
+                        )
                         if tx_text:
                             self._event_queue.put_nowait(
-                                LiveEvent(kind="transcript_delta", text=tx_text)
+                                LiveEvent(kind="transcript_delta", text=tx_text if isinstance(tx_text, str) else str(tx_text))
                             )
                     # --- model_turn text parts (non-native models, or model responses) ---
                     mt = getattr(sc, "model_turn", None)

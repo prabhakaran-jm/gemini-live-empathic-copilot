@@ -32,6 +32,8 @@ SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
+# Tension score at or above this triggers "slow_down" whisper (lower = more sensitive for quiet mics)
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "24"))
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -138,8 +140,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
             trigger = None
-            # (a) Tension crossed upward into >=40
-            if prev_tension_score < 40 and last_tension_score >= 40:
+            # (a) Tension crossed upward into threshold (default 25; set TENSION_WHISPER_THRESHOLD to tune)
+            if prev_tension_score < TENSION_WHISPER_THRESHOLD and last_tension_score >= TENSION_WHISPER_THRESHOLD:
                 trigger = "tension_cross"
             # (b) Overlap heuristic: high interruption rate in last 5s
             if trigger is None:
