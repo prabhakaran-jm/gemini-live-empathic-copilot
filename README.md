@@ -105,8 +105,10 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (required for Vertex AI). |
 | `GOOGLE_CLOUD_REGION` | Region (default `europe-west1`; must be a [Live model–supported region](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-live-api)). |
 | `GEMINI_MODEL` | Gemini Live model (default `gemini-live-2.5-flash-native-audio`). |
+| `TENSION_WHISPER_THRESHOLD` | Tension score (0–100) above which a coaching whisper is triggered (default `24`). |
 | `BARGE_IN_RMS_THRESHOLD` | RMS threshold for barge-in (default `0.15`). |
-| `COACHING_LIVE_AUDIO` | Set to `1` to enable Gemini Live audio synthesis for coaching whispers (PCM16 mono 24 kHz). Default `0` (browser Web Speech API only). |
+| `COACHING_GROUNDING` | Set to `1` to enable Google Search grounding for coaching (NVC/citations). Default `0`. |
+| `COACHING_LIVE_AUDIO` | Set to `1` to use Gemini Live TTS for coaching whispers (PCM16 mono 24 kHz). Default `1`; set to `0` for browser Web Speech API only. |
 
 **Auth (choose one):**
 

@@ -35,7 +35,7 @@ SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
-COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "0").strip().lower() in (
+COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower() in (
     "1",
     "true",
     "yes",
