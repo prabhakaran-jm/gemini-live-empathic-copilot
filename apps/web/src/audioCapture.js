@@ -136,7 +136,14 @@ function startWithScriptProcessor(audioContext, source, stream, onChunk) {
  * Uses AudioWorklet when available, otherwise ScriptProcessor.
  */
 export async function startAudioCapture({ onChunk }) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: true,
+      channelCount: 1,
+    },
+  })
   const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
   const source = audioContext.createMediaStreamSource(stream)
 

@@ -31,8 +31,8 @@ BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
 RMS_EMA_ALPHA = 0.2  # rms_ema = (1-alpha)*prev + alpha*current
 SILENCE_RMS_THRESHOLD = 0.05
 WHISPER_COOLDOWN_SEC = 12.0
-# Tension score at or above this triggers "slow_down" whisper (env TENSION_WHISPER_THRESHOLD, default 24)
-TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "24"))
+# Tension score at or above this triggers "tension_cross" whisper (env TENSION_WHISPER_THRESHOLD, default 20 for demo-friendly)
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "20"))
 SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0

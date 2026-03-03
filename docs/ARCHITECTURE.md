@@ -12,7 +12,7 @@ graph TB
     subgraph CloudRun ["Google Cloud Run (FastAPI)"]
         WS["WebSocket /ws"]
         TL["Tension Loop<br/>RMS + Silence + Overlap + Semantic → 0-100"]
-        WL["Whisper Loop<br/>Triggers: tension ≥threshold (24),<br/>2+ barge-ins, post-escalation silence"]
+        WL["Whisper Loop<br/>Triggers: tension ≥threshold (20),<br/>2+ barge-ins, post-escalation silence"]
     end
 
     subgraph GCP ["Google Cloud AI"]

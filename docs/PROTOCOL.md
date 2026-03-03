@@ -57,7 +57,7 @@ The `move` field in a `whisper` message indicates which trigger fired:
 
 | `move` (trigger)          | Condition                                                        | Fallback phrase |
 |---------------------------|------------------------------------------------------------------|-----------------|
-| `tension_cross`           | Tension score crossed upward past threshold (env `TENSION_WHISPER_THRESHOLD`, default 24) | "Taking a breath before the next sentence can help." |
+| `tension_cross`           | Tension score crossed upward past threshold (env `TENSION_WHISPER_THRESHOLD`, default 20) | "Taking a breath before the next sentence can help." |
 | `barge_in`                | 2+ interruptions detected within 5s window                       | "It sounds like this is really important to you right now." |
 | `post_escalation_silence` | Silence >2.5s after tension was ≥70 in last 10s                 | "Would it help to say what you're hoping they take away?" |
 

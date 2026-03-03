@@ -39,7 +39,7 @@ Replace `YOUR_PROJECT_ID` with your Google Cloud project ID. The script builds t
 | `GOOGLE_CLOUD_REGION` | `europe-west1` | Region for Vertex AI. |
 | `GEMINI_MODEL` | `gemini-live-2.5-flash-native-audio` | Gemini Live model. |
 | `BARGE_IN_RMS_THRESHOLD` | `0.15` | RMS threshold for barge-in. |
-| `TENSION_WHISPER_THRESHOLD` | `24` | Tension score ≥ this triggers a whisper. |
+| `TENSION_WHISPER_THRESHOLD` | `20` | Tension score ≥ this triggers a whisper. |
 | `COACHING_GROUNDING` | `0` | Set to `1`, `true`, or `yes` to enable Google Search grounding for coaching whispers (citations). |
 
 **Verify:** `curl https://YOUR_SERVICE_URL/health` → expect `{"status":"ok"}`. Save the service URL for the frontend.

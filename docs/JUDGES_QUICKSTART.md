@@ -42,7 +42,7 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
    - Click **Start session**. Allow microphone when prompted. UI should show "Backend: Cloud Run" and session active.
    - **Transcript:** Speak normally (e.g. "I’m practicing a difficult conversation"). Within a few seconds you should see live transcript in the UI.
    - **Backchannel:** While you speak, you may hear subtle empathetic backchannels from the Live model (e.g. "Mmhm", "I see") at low volume — the main Gemini Live session acknowledging you in real time.
-   - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; after a short delay you should see *and hear* a coaching whisper (e.g. "Taking a breath before the next sentence can help.") — audio is from Gemini Live when `COACHING_LIVE_AUDIO` is enabled (default).
+   - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; when it crosses the threshold (default **20**), you should see *and hear* a coaching whisper. If no whisper fires, speak a bit louder or set `TENSION_WHISPER_THRESHOLD=18` on the backend for a more sensitive demo.
    - **Barge-in / interrupted:** While the agent is speaking (or during a period when it would be generating), keep talking or interrupt. With `?debug=1` in the URL, open the **Event log** to see entries (e.g. `event: interrupted`).
    - There is no separate "Ask coach" button; coaching is triggered automatically by the backend from volume, silence, and overlap. Agent output is the live transcript plus these whisper lines.
    - Click **Stop session** when done.
