@@ -20,6 +20,8 @@ GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
+# Set to 1 to force dict config for main session (to test if typed LiveConnectConfig causes receive() to yield no messages)
+GEMINI_LIVE_USE_DICT_CONFIG = os.environ.get("GEMINI_LIVE_USE_DICT_CONFIG", "").strip().lower() in ("1", "true", "yes")
 
 
 # --- Events yielded by recv_events() ---
@@ -178,15 +180,16 @@ class RealGeminiLiveSession(IGeminiLiveSession):
     async def _receive_loop(self) -> None:
         """Consume session.receive() and push LiveEvents to _event_queue."""
         _log_structure_once = True
+        _total_msgs = 0
         logger.info("_receive_loop started")
         try:
             async for msg in self._session.receive():
+                _total_msgs += 1
                 if self._closed:
                     break
                 sc = getattr(msg, "server_content", None)
                 # Per-message diagnostic at INFO (throttle: first 20, then every 50th)
-                _msg_count = getattr(self, "_recv_msg_count", 0)
-                self._recv_msg_count = _msg_count + 1
+                _msg_count = _total_msgs - 1
                 if _msg_count < 20 or _msg_count % 50 == 0:
                     logger.info(
                         "recv msg #%s: type=%s, has_server_content=%s, has_text=%s",
@@ -321,7 +324,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             if not self._closed:
                 self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
         finally:
-            logger.info("_receive_loop ended")
+            logger.info("_receive_loop ended (received %s messages from Gemini Live)", _total_msgs)
             self._event_queue.put_nowait(None)
 
     async def recv_events(self) -> AsyncIterator[LiveEvent]:
@@ -395,32 +398,37 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         )
         live_config = None
         if is_native_audio:
-            # Prefer typed LiveConnectConfig so input_audio_transcription is reliably passed (dict may be lossy).
-            try:
-                from google.genai import types
-                kwargs = {
-                    "response_modalities": ["AUDIO"],
-                    "speech_config": types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
-                        )
-                    ),
-                    "system_instruction": types.Content(parts=[types.Part.from_text(text=system_text)]),
-                }
-                if getattr(types, "InputAudioTranscription", None) is not None:
-                    kwargs["input_audio_transcription"] = types.InputAudioTranscription()
-                live_config = types.LiveConnectConfig(**kwargs)
-                logger.info("Using LiveConnectConfig (typed) for main session")
-            except Exception as e:
-                logger.warning("LiveConnectConfig build failed, using dict config: %s", e)
-                live_config = {
-                    "response_modalities": ["AUDIO"],
-                    "speech_config": {
-                        "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
-                    },
-                    "input_audio_transcription": {},
-                    "system_instruction": {"parts": [{"text": system_text}]},
-                }
+            dict_config = {
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
+                },
+                "input_audio_transcription": {},
+                "system_instruction": {"parts": [{"text": system_text}]},
+            }
+            if GEMINI_LIVE_USE_DICT_CONFIG:
+                live_config = dict_config
+                logger.info("Using dict config for main session (GEMINI_LIVE_USE_DICT_CONFIG=1)")
+            else:
+                # Prefer typed LiveConnectConfig so input_audio_transcription is reliably passed (dict may be lossy).
+                try:
+                    from google.genai import types
+                    kwargs = {
+                        "response_modalities": ["AUDIO"],
+                        "speech_config": types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                            )
+                        ),
+                        "system_instruction": types.Content(parts=[types.Part.from_text(text=system_text)]),
+                    }
+                    if getattr(types, "InputAudioTranscription", None) is not None:
+                        kwargs["input_audio_transcription"] = types.InputAudioTranscription()
+                    live_config = types.LiveConnectConfig(**kwargs)
+                    logger.info("Using LiveConnectConfig (typed) for main session")
+                except Exception as e:
+                    logger.warning("LiveConnectConfig build failed, using dict config: %s", e)
+                    live_config = dict_config
         if not is_native_audio:
             # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
             # Do NOT include speech_config with TEXT — they are incompatible.
