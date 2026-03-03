@@ -153,14 +153,45 @@ class RealGeminiLiveSession(IGeminiLiveSession):
         except Exception:
             pass
 
+    def _extract_transcript_from_obj(self, obj: object, seen: set | None = None) -> list[str]:
+        """Recursively extract transcript-like strings from SDK response objects (for API variants)."""
+        if seen is None:
+            seen = set()
+        if id(obj) in seen or obj is None:
+            return []
+        seen.add(id(obj))
+        out: list[str] = []
+        if isinstance(obj, str) and obj.strip():
+            out.append(obj.strip())
+            return out
+        for name in ("text", "transcript", "content"):
+            val = getattr(obj, name, None)
+            if isinstance(val, str) and val.strip():
+                out.append(val.strip())
+        for name in ("parts", "content", "input_transcription", "input_audio_transcription"):
+            val = getattr(obj, name, None)
+            if isinstance(val, (list, tuple)):
+                for item in val:
+                    out.extend(self._extract_transcript_from_obj(item, seen))
+        return out
+
     async def _receive_loop(self) -> None:
         """Consume session.receive() and push LiveEvents to _event_queue."""
+        _log_structure_once = True
         try:
             async for msg in self._session.receive():
                 if self._closed:
                     break
                 sc = getattr(msg, "server_content", None)
                 if sc is not None:
+                    # Optional: log message structure once at DEBUG to diagnose missing transcription
+                    if _log_structure_once and logger.isEnabledFor(logging.DEBUG):
+                        try:
+                            attrs = [a for a in dir(sc) if not a.startswith("_")]
+                            logger.debug("server_content attrs: %s", attrs)
+                            _log_structure_once = False
+                        except Exception:
+                            pass
                     # --- input_audio_transcription results (native-audio models) ---
                     # User's speech transcribed; use user_transcript_delta so recv_events() won't treat as agent output.
                     # API may use input_transcription or input_audio_transcription.
@@ -191,6 +222,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                 LiveEvent(kind="user_transcript_delta", text=ev_text)
                             )
                     # Fallback: try other known names for input transcription (SDK/API variants)
+                    emitted_input = bool(input_tx)
                     for attr in ("realtime_input_transcription", "realtime_input_audio_transcription"):
                         input_tx_alt = getattr(sc, attr, None)
                         if input_tx_alt and input_tx_alt is not input_tx:
@@ -203,6 +235,24 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                 self._event_queue.put_nowait(
                                     LiveEvent(kind="user_transcript_delta", text=alt_text if isinstance(alt_text, str) else str(alt_text))
                                 )
+                                emitted_input = True
+                                break
+                    # Fallback: recursively scan input-transcription-like attrs only (SDK structure may vary)
+                    if not emitted_input:
+                        for attr in (
+                            "input_transcription", "input_audio_transcription",
+                            "realtime_input_transcription", "realtime_input_audio_transcription",
+                        ):
+                            obj = getattr(sc, attr, None)
+                            if obj is None:
+                                continue
+                            for text in self._extract_transcript_from_obj(obj):
+                                if text and len(text) < 5000:  # sanity: user utterance, not huge blob
+                                    self._event_queue.put_nowait(LiveEvent(kind="user_transcript_delta", text=text))
+                                    logger.info("Live transcript (fallback): %s", text[:80] + "..." if len(text) > 80 else text)
+                                    emitted_input = True
+                                    break
+                            if emitted_input:
                                 break
                     # --- model_turn: text parts + audio (backchannel) ---
                     mt = getattr(sc, "model_turn", None)
@@ -383,8 +433,10 @@ async def generate_whisper_audio(text: str) -> str | None:
             system_instruction=types.Content(
                 parts=[
                     types.Part.from_text(
-                        "You are a soft-spoken coach. Read the user's text aloud exactly as written, "
-                        "in a calm whispered tone. Do not add any words."
+                        text=(
+                            "You are a soft-spoken coach. Read the user's text aloud exactly as written, "
+                            "in a calm whispered tone. Do not add any words."
+                        )
                     )
                 ]
             ),

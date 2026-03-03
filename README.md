@@ -129,7 +129,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 
 ## Docs for judges
 
-- [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md) – Health check, run frontend, test script, troubleshooting.
+- [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md) – Health check, run frontend, test script, backchannel note, troubleshooting.
 - [docs/DEPLOY.md](docs/DEPLOY.md) – Deploy backend + frontend, smoke test.
 
 ---

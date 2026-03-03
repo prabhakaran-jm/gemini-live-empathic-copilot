@@ -11,7 +11,7 @@ import time
 from collections import deque
 from typing import Any
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
 from app.gemini_live_client import (
@@ -49,8 +49,19 @@ GEMINI_RECONNECT = os.environ.get("GEMINI_RECONNECT", "1").strip().lower() in ("
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
     try:
         await ws.send_json(obj)
+    except WebSocketDisconnect:
+        # Client already closed the connection (e.g. after sending "stop"). Expected; no need to warn.
+        msg_type = obj.get("type", "?")
+        logger.debug("Send skipped (type=%s): client disconnected", msg_type)
     except Exception as e:
-        logger.warning("Send failed: %s", e)
+        msg_type = obj.get("type", "?")
+        err_msg = str(e).strip() or getattr(e, "message", "") or type(e).__name__
+        logger.warning(
+            "Send failed (type=%s): %s: %s",
+            msg_type,
+            type(e).__name__,
+            err_msg,
+        )
 
 
 async def handle_websocket(websocket: WebSocket) -> None:
@@ -224,6 +235,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
             if trigger is not None:
                 last_whisper_ts = now
                 prev_tension_score = last_tension_score
+                # Reset tension state so tension can recover naturally after coaching
+                tension_state.silence_start = None
+                tension_state.overlap_timestamps.clear()
                 transcript_text = "".join(transcript_buffer)
                 coaching_result = await generate_coaching(
                     trigger=trigger,

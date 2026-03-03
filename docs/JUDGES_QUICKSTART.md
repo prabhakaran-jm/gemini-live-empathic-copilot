@@ -41,6 +41,7 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
 4. **Test script**
    - Click **Start session**. Allow microphone when prompted. UI should show "Backend: Cloud Run" and session active.
    - **Transcript:** Speak normally (e.g. "I’m practicing a difficult conversation"). Within a few seconds you should see live transcript in the UI.
+   - **Backchannel:** While you speak, you may hear subtle empathetic backchannels from the Live model (e.g. "Mmhm", "I see") at low volume — the main Gemini Live session acknowledging you in real time.
    - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; after a short delay you should see *and hear* a coaching whisper (e.g. "Taking a breath before the next sentence can help.") — audio is from Gemini Live when `COACHING_LIVE_AUDIO` is enabled (default).
    - **Barge-in / interrupted:** While the agent is speaking (or during a period when it would be generating), keep talking or interrupt. With `?debug=1` in the URL, open the **Event log** to see entries (e.g. `event: interrupted`).
    - There is no separate "Ask coach" button; coaching is triggered automatically by the backend from volume, silence, and overlap. Agent output is the live transcript plus these whisper lines.
@@ -74,9 +75,10 @@ Follow [DEPLOY.md](DEPLOY.md) to build and deploy the server (and optionally the
 
 1. **Start** — Click **Start session**, allow mic. Confirm "Backend: Local" or "Backend: Cloud Run" and that the session is active (e.g. tension bar visible).
 2. **Transcript** — Say: "I’m rehearsing a hard conversation with a colleague." Within ~5–10 s you should see your words in the Transcript area (when using real Gemini backend).
-3. **Tension + whisper** — Speak a bit louder or more emphatically for a few seconds. Watch the tension bar; when it crosses upward, a whisper may appear (e.g. slow_down). Cooldown between whispers is ~12 s.
+3. **Backchannel** — While speaking, listen for subtle empathetic backchannels (e.g. "Mmhm", "I see") from the main Gemini Live session at low volume.
+4. **Tension + whisper** — Speak a bit louder or more emphatically for a few seconds. Watch the tension bar; when it crosses upward, a whisper may appear (e.g. slow_down). Cooldown between whispers is ~12 s.
 4. **Interrupted event** — Trigger agent output (e.g. ask a question that elicits a longer reply) or wait for a response; then talk over it. In the Event log, look for an entry like `event: interrupted`.
-5. **Stop** — Click **Stop session**. Session should end cleanly; no further tension/whisper/transcript.
+6. **Stop** — Click **Stop session**. Session should end cleanly; no further tension/whisper/transcript.
 
 ---
 
@@ -88,4 +90,5 @@ Follow [DEPLOY.md](DEPLOY.md) to build and deploy the server (and optionally the
 | **WebSocket fails / wrong backend** | If using Cloud Run: set `VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` (not `https`). Restart `npm run dev` after changing env. Check browser console for WS errors. |
 | **403 or Vertex / Gemini errors** | Backend may lack Vertex AI permissions. On Cloud Run, the service account needs e.g. "Vertex AI User". See [DEPLOY.md](DEPLOY.md); deploy script prints the service account to grant. For local dev with API key, ensure `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY` is set. |
 | **No transcript, "Gemini unavailable" message** | Backend is in degraded mode (Gemini connect failed). You still get tension + whispers. Check backend logs and Vertex/API key configuration. |
+| **Transcript shows only "Listening…"** | Backend may not be receiving transcription from Gemini Live. Confirm you're not in MOCK mode. Speak clearly for 5–10 s; transcription can appear after short pauses. Check backend logs for "Live transcript" or "transcript (fallback)" at INFO. With `LOG_LEVEL=DEBUG`, backend logs one-time `server_content attrs` to verify API response shape. Ensure mic is working and audio is being sent (e.g. tension bar moves when you speak). |
 | **Nothing happens on Start** | Confirm `/health` returns 200 for the backend you’re using. Check Event log for `ready` or `error` messages. Ensure WS URL is correct (e.g. `wss://` for HTTPS Cloud Run). |

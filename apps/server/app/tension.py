@@ -64,7 +64,7 @@ class TensionState:
     last_rms: float = 0.0
     silence_start: float | None = None  # time when current silence started
     silence_threshold_sec: float = 2.5
-    overlap_count: int = 0
+    overlap_timestamps: deque[float] = field(default_factory=lambda: deque(maxlen=20))  # recent barge-in times for decay
     recent_rms: deque[float] = field(default_factory=lambda: deque(maxlen=30))
     max_rms_history: int = 30
 
@@ -82,7 +82,10 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
         state.silence_start = None
         state.recent_rms.append(telemetry.rms)
     if telemetry.is_overlap:
-        state.overlap_count += 1
+        state.overlap_timestamps.append(telemetry.ts)
+    # Only count overlaps in the last 10 seconds (time-based decay)
+    while state.overlap_timestamps and telemetry.ts - state.overlap_timestamps[0] > 10.0:
+        state.overlap_timestamps.popleft()
     state.last_rms = telemetry.rms
 
     # Score components (each 0..1 scale, then weighted)
@@ -93,8 +96,8 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     silence_sec = (telemetry.ts - state.silence_start) if state.silence_start else 0.0
     silence_score = min(1.0, silence_sec / state.silence_threshold_sec) if telemetry.is_silence else 0.0
 
-    # 3) Overlap: more overlaps -> higher tension (turn-taking friction)
-    overlap_score = min(1.0, state.overlap_count * 0.2)
+    # 3) Overlap: recent barge-ins only (decays after 10s)
+    overlap_score = min(1.0, len(state.overlap_timestamps) * 0.2)
 
     # 4-signal: audio (RMS, silence, overlap) + text (semantic from transcript)
     semantic = telemetry.semantic_score

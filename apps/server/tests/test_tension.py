@@ -46,16 +46,30 @@ def test_tension_silence_accumulates():
 
 
 def test_tension_overlap_increases_score():
-    """Multiple overlap (barge-in) events increase overlap_score."""
+    """Multiple overlap (barge-in) events increase overlap_score (recent timestamps only)."""
     state = TensionState()
     for i in range(4):
         t = AudioTelemetry(rms=0.5, is_silence=False, is_overlap=True, ts=1000.0 + i)
         compute_tension_from_telemetry(t, state)
-    # overlap_score caps at 1.0 (0.2 * 4 = 0.8), combined with rms
+    # overlap_timestamps has 4 entries within 10s; overlap_score = min(1.0, 0.8) = 0.8
     score = compute_tension_from_telemetry(
         AudioTelemetry(rms=0.5, is_silence=False, is_overlap=False, ts=1005.0), state
     )
     assert score >= 30
+
+
+def test_overlap_decays_over_time():
+    """Old overlaps (>10s) are not counted; tension can recover after calm period."""
+    state = TensionState()
+    # One overlap at t=0
+    compute_tension_from_telemetry(
+        AudioTelemetry(rms=0.3, is_silence=False, is_overlap=True, ts=0.0), state
+    )
+    # 15 seconds later, calm speech (no overlap)
+    calm = AudioTelemetry(rms=0.1, is_silence=False, is_overlap=False, ts=15.0)
+    score = compute_tension_from_telemetry(calm, state)
+    # Overlap at t=0 is older than 10s, so trimmed; overlap_score=0, score should be low
+    assert score < 20
 
 
 def test_tension_bounded_0_100():
