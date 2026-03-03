@@ -116,6 +116,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 | `COACHING_GROUNDING` | Set to `1` to enable Google Search grounding for coaching (NVC/citations). Default `0`. |
 | `COACHING_LIVE_AUDIO` | Set to `1` to use Gemini Live TTS for coaching whispers (PCM16 mono 24 kHz). Default `1`; set to `0` for browser Web Speech API only. |
 | `LIVE_BACKCHANNEL` | Set to `1` (default) to enable Gemini Live empathetic backchanneling ("Mmhm", "I see"). Set to `0` for silent transcription only. |
+| `GEMINI_RECONNECT` | Set to `1` (default) to attempt reconnecting the Gemini Live session when the recv stream drops; set to `0` to stay in degraded mode only. |
 
 **Auth (choose one):**
 

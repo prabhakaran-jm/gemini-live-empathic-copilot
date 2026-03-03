@@ -42,6 +42,8 @@ COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower()
     "true",
     "yes",
 )
+# When the Live session recv stream drops, attempt to reconnect and restart consume_recv_events (default 1).
+GEMINI_RECONNECT = os.environ.get("GEMINI_RECONNECT", "1").strip().lower() in ("1", "true", "yes")
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -58,6 +60,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     tension_task: asyncio.Task | None = None
     agent_task: asyncio.Task | None = None
     events_task: asyncio.Task | None = None
+    watch_task: asyncio.Task | None = None
     whisper_task: asyncio.Task | None = None
     agent_output_started: bool = False
     degraded_mode: bool = False  # True when Gemini connect failed; tension + whisper_loop still run
@@ -156,6 +159,42 @@ async def handle_websocket(websocket: WebSocket) -> None:
         except Exception as e:
             logger.exception("recv_events error: %s", e)
 
+    async def watch_events_and_reconnect() -> None:
+        """When consume_recv_events exits (Live stream died), try to reconnect and restart the recv loop."""
+        nonlocal session, events_task, degraded_mode
+        try:
+            while running and session is not None and events_task is not None:
+                try:
+                    await events_task
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    logger.warning("recv_events task exited: %s", e)
+                if not running or session is None:
+                    return
+                old_session = session
+                session = None
+                try:
+                    await old_session.close()
+                except Exception:
+                    pass
+                try:
+                    client = get_gemini_client()
+                    session = await client.connect(LiveSessionConfig())
+                    events_task = asyncio.create_task(consume_recv_events())
+                    await send_json(
+                        websocket,
+                        {"type": "event", "name": "reconnected", "ts": int(time.time() * 1000)},
+                    )
+                    logger.info("Gemini Live session reconnected")
+                except Exception as e:
+                    logger.warning("Gemini reconnect failed; staying in degraded mode: %s", e)
+                    degraded_mode = True
+                    session = None
+                    return
+        except asyncio.CancelledError:
+            pass
+
     async def whisper_loop() -> None:
         """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
         nonlocal last_whisper_ts, prev_tension_score, last_tension_score
@@ -252,6 +291,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         session = await client.connect(LiveSessionConfig())
                         if hasattr(session, "recv_events"):
                             events_task = asyncio.create_task(consume_recv_events())
+                            if GEMINI_RECONNECT:
+                                watch_task = asyncio.create_task(watch_events_and_reconnect())
                         if hasattr(session, "agent_turns"):
                             agent_task = asyncio.create_task(consume_agent_turns())
                         whisper_task = asyncio.create_task(whisper_loop())
@@ -289,6 +330,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     events_task.cancel()
                     try:
                         await events_task
+                    except asyncio.CancelledError:
+                        pass
+                if watch_task:
+                    watch_task.cancel()
+                    try:
+                        await watch_task
                     except asyncio.CancelledError:
                         pass
                 if whisper_task:
@@ -376,6 +423,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
             events_task.cancel()
             try:
                 await events_task
+            except asyncio.CancelledError:
+                pass
+        if watch_task and not watch_task.done():
+            watch_task.cancel()
+            try:
+                await watch_task
             except asyncio.CancelledError:
                 pass
         if whisper_task and not whisper_task.done():

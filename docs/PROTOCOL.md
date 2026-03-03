@@ -37,7 +37,7 @@ Our backend speaks this protocol with the browser and (separately) with Gemini L
 | `whisper`        | Coaching whisper (text)   | `{ "text": string, "move": string, "ts": number, "audio_base64"?: string }` — `audio_base64` is optional base64-encoded PCM16 mono 24 kHz audio from Gemini Live; absent when `COACHING_LIVE_AUDIO` is disabled or audio generation fails. |
 | `backchannel_audio` | Live model backchannel | `{ "audio_base64": string, "ts": number }` — base64-encoded PCM16 mono 24 kHz audio from Gemini Live model. Very short acknowledgments ("Mmhm", "I see"). Suppressed near coaching whispers. Only sent when `LIVE_BACKCHANNEL=1` (default). |
 | `error`          | Error                    | `{ "message": string }` |
-| `event`          | Client event (e.g. barge-in) | `{ "name": string, "ts": number }` e.g. `name: "interrupted"` |
+| `event`          | Client event (e.g. barge-in, reconnected) | `{ "name": string, "ts": number }` e.g. `name: "interrupted"` or `name: "reconnected"` (after backend Gemini Live reconnect). |
 | `stopped`        | Session ended            | `{}` |
 
 - All server messages that carry a timestamp use `ts` as Unix milliseconds (optional but recommended for logs).
