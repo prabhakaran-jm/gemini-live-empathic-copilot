@@ -178,20 +178,36 @@ class RealGeminiLiveSession(IGeminiLiveSession):
     async def _receive_loop(self) -> None:
         """Consume session.receive() and push LiveEvents to _event_queue."""
         _log_structure_once = True
+        logger.info("_receive_loop started")
         try:
             async for msg in self._session.receive():
                 if self._closed:
                     break
                 sc = getattr(msg, "server_content", None)
+                # Per-message diagnostic at INFO (throttle: first 20, then every 50th)
+                _msg_count = getattr(self, "_recv_msg_count", 0)
+                self._recv_msg_count = _msg_count + 1
+                if _msg_count < 20 or _msg_count % 50 == 0:
+                    logger.info(
+                        "recv msg #%s: type=%s, has_server_content=%s, has_text=%s",
+                        _msg_count,
+                        type(msg).__name__,
+                        sc is not None,
+                        bool(getattr(msg, "text", None)),
+                    )
+                # Log top-level msg and server_content structure once to find where transcription lives
+                if _log_structure_once:
+                    try:
+                        msg_attrs = [a for a in dir(msg) if not a.startswith("_")]
+                        logger.info("recv msg top-level attrs: %s", msg_attrs)
+                        if sc is not None:
+                            sc_attrs = [a for a in dir(sc) if not a.startswith("_")]
+                            logger.info("server_content attrs: %s", sc_attrs)
+                        _log_structure_once = False
+                    except Exception:
+                        pass
+                emitted_this_msg = False
                 if sc is not None:
-                    # Optional: log message structure once at DEBUG to diagnose missing transcription
-                    if _log_structure_once and logger.isEnabledFor(logging.DEBUG):
-                        try:
-                            attrs = [a for a in dir(sc) if not a.startswith("_")]
-                            logger.debug("server_content attrs: %s", attrs)
-                            _log_structure_once = False
-                        except Exception:
-                            pass
                     # --- input_audio_transcription results (native-audio models) ---
                     # User's speech transcribed; use user_transcript_delta so recv_events() won't treat as agent output.
                     # API may use input_transcription or input_audio_transcription.
@@ -215,6 +231,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                     self._event_queue.put_nowait(
                                         LiveEvent(kind="user_transcript_delta", text=pt)
                                     )
+                                    emitted_this_msg = True
                         elif tx_text:
                             ev_text = tx_text if isinstance(tx_text, str) else str(tx_text)
                             logger.debug("Live transcript (single): %s", ev_text[:80] + "..." if len(ev_text) > 80 else ev_text)
@@ -236,6 +253,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                     LiveEvent(kind="user_transcript_delta", text=alt_text if isinstance(alt_text, str) else str(alt_text))
                                 )
                                 emitted_input = True
+                                emitted_this_msg = True
                                 break
                     # Fallback: recursively scan input-transcription-like attrs only (SDK structure may vary)
                     if not emitted_input:
@@ -251,6 +269,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                     self._event_queue.put_nowait(LiveEvent(kind="user_transcript_delta", text=text))
                                     logger.info("Live transcript (fallback): %s", text[:80] + "..." if len(text) > 80 else text)
                                     emitted_input = True
+                                    emitted_this_msg = True
                                     break
                             if emitted_input:
                                 break
@@ -285,12 +304,24 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                     self._event_queue.put_nowait(
                         LiveEvent(kind="transcript_delta", text=msg.text)
                     )
+                # --- top-level transcript-like fields (transcription may live on msg, not server_content) ---
+                if not emitted_this_msg:
+                    for attr in ("input_transcription", "input_audio_transcription", "realtime_input_transcription", "realtime_input_audio_transcription"):
+                        obj = getattr(msg, attr, None)
+                        if obj is None:
+                            continue
+                        for text in self._extract_transcript_from_obj(obj):
+                            if text and len(text) < 5000:
+                                self._event_queue.put_nowait(LiveEvent(kind="user_transcript_delta", text=text))
+                                logger.info("Live transcript (top-level %s): %s", attr, text[:80] + "..." if len(text) > 80 else text)
+                                break
         except asyncio.CancelledError:
             pass
         except Exception as e:
             if not self._closed:
                 self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
         finally:
+            logger.info("_receive_loop ended")
             self._event_queue.put_nowait(None)
 
     async def recv_events(self) -> AsyncIterator[LiveEvent]:
@@ -345,45 +376,52 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         model = config.model
         is_native_audio = "native-audio" in model
 
+        system_text = (
+            "You are an empathetic listening companion in a real-time conversation. "
+            "Your role is minimal backchannel feedback only. "
+            "Rules:\n"
+            "- Respond ONLY with very short acknowledgments: 'Mmhm', 'I see', 'Go on', 'Right', 'Okay', 'Yeah'.\n"
+            "- NEVER say more than 3 words at a time.\n"
+            "- NEVER give advice, opinions, questions, or commentary.\n"
+            "- NEVER repeat or paraphrase what the user said.\n"
+            "- Respond infrequently — only every 10-15 seconds of user speech, not after every sentence.\n"
+            "- Use a calm, soft, gentle tone.\n"
+            "- If unsure, stay silent. Silence is always acceptable."
+        ) if LIVE_BACKCHANNEL else (
+            "You are an invisible listening assistant. "
+            "Your ONLY job is to transcribe what the user says. "
+            "Do NOT speak, do NOT generate audio output, do NOT respond. "
+            "Stay completely silent."
+        )
+        live_config = None
         if is_native_audio:
-            # Native-audio models REQUIRE response_modalities=["AUDIO"].
-            # We add input_audio_transcription to receive text transcripts
-            # of the user's speech. When LIVE_BACKCHANNEL=1, model may emit minimal backchannels.
-            live_config = {
-                "response_modalities": ["AUDIO"],
-                "speech_config": {
-                    "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
-                },
-                "input_audio_transcription": {},
-                "system_instruction": {
-                    "parts": [
-                        {
-                            "text": (
-                                (
-                                    "You are an empathetic listening companion in a real-time conversation. "
-                                    "Your role is minimal backchannel feedback only. "
-                                    "Rules:\n"
-                                    "- Respond ONLY with very short acknowledgments: 'Mmhm', 'I see', 'Go on', 'Right', 'Okay', 'Yeah'.\n"
-                                    "- NEVER say more than 3 words at a time.\n"
-                                    "- NEVER give advice, opinions, questions, or commentary.\n"
-                                    "- NEVER repeat or paraphrase what the user said.\n"
-                                    "- Respond infrequently — only every 10-15 seconds of user speech, not after every sentence.\n"
-                                    "- Use a calm, soft, gentle tone.\n"
-                                    "- If unsure, stay silent. Silence is always acceptable."
-                                )
-                                if LIVE_BACKCHANNEL
-                                else (
-                                    "You are an invisible listening assistant. "
-                                    "Your ONLY job is to transcribe what the user says. "
-                                    "Do NOT speak, do NOT generate audio output, do NOT respond. "
-                                    "Stay completely silent."
-                                )
-                            )
-                        }
-                    ]
-                },
-            }
-        else:
+            # Prefer typed LiveConnectConfig so input_audio_transcription is reliably passed (dict may be lossy).
+            try:
+                from google.genai import types
+                kwargs = {
+                    "response_modalities": ["AUDIO"],
+                    "speech_config": types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                        )
+                    ),
+                    "system_instruction": types.Content(parts=[types.Part.from_text(text=system_text)]),
+                }
+                if getattr(types, "InputAudioTranscription", None) is not None:
+                    kwargs["input_audio_transcription"] = types.InputAudioTranscription()
+                live_config = types.LiveConnectConfig(**kwargs)
+                logger.info("Using LiveConnectConfig (typed) for main session")
+            except Exception as e:
+                logger.warning("LiveConnectConfig build failed, using dict config: %s", e)
+                live_config = {
+                    "response_modalities": ["AUDIO"],
+                    "speech_config": {
+                        "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
+                    },
+                    "input_audio_transcription": {},
+                    "system_instruction": {"parts": [{"text": system_text}]},
+                }
+        if not is_native_audio:
             # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
             # Do NOT include speech_config with TEXT — they are incompatible.
             live_config = {
