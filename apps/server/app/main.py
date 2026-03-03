@@ -10,6 +10,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.websocket_handler import handle_websocket
 
+# Configure logging when app loads (Cloud Run runs uvicorn app.main:app, so run.py is never executed)
+_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, _level, logging.INFO))
+
 logger = logging.getLogger(__name__)
 
 
