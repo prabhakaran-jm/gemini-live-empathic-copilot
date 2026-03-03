@@ -13,11 +13,9 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
+from app.coaching import COACHING_MOVES, generate_coaching
 from app.gemini_live_client import (
-    AgentTurn,
     IGeminiLiveSession,
-    LIVE_BACKCHANNEL,
     LiveSessionConfig,
     generate_whisper_audio,
     get_gemini_client,
@@ -37,6 +35,8 @@ SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
+TELEMETRY_QUEUE_MAXSIZE = 32
+TRANSCRIPT_CONTEXT_MAX_CHARS = 4000
 COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower() in (
     "1",
     "true",
@@ -67,7 +67,9 @@ async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
 async def handle_websocket(websocket: WebSocket) -> None:
     session: IGeminiLiveSession | None = None
     tension_state = TensionState()
-    telemetry_queue: asyncio.Queue[AudioTelemetry | None] = asyncio.Queue()
+    telemetry_queue: asyncio.Queue[AudioTelemetry | None] = asyncio.Queue(
+        maxsize=TELEMETRY_QUEUE_MAXSIZE
+    )
     tension_task: asyncio.Task | None = None
     agent_task: asyncio.Task | None = None
     events_task: asyncio.Task | None = None
@@ -82,7 +84,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     tension_history: deque[tuple[float, int]] = deque()
     last_whisper_ts: float = 0.0
     interrupted_events: deque[float] = deque()
-    transcript_buffer: list[str] = []
+    transcript_context: str = ""
     latest_frame_base64: str | None = None  # optional webcam frame for vision-aware coaching
 
     def on_tension(score: int) -> None:
@@ -99,6 +101,34 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def run_tension_loop() -> None:
         await compute_tension_loop(telemetry_queue, tension_state, on_tension, interval_sec=0.5)
+
+    def enqueue_latest_telemetry(telemetry: AudioTelemetry) -> None:
+        """
+        Keep telemetry queue fresh and bounded by dropping stale items when full.
+        compute_tension_loop only needs the newest sample per tick.
+        """
+        if telemetry_queue.full():
+            try:
+                telemetry_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            telemetry_queue.put_nowait(telemetry)
+        except asyncio.QueueFull:
+            # Best-effort freshness: if still full due race, drop this sample.
+            pass
+
+    def signal_tension_stop() -> None:
+        """Insert stop sentinel without blocking, even if queue is currently full."""
+        try:
+            while True:
+                telemetry_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            telemetry_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
 
     async def consume_agent_turns() -> None:
         """Stub only: forward injected turns as whispers (coaching still from coaching.py)."""
@@ -128,7 +158,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def consume_recv_events() -> None:
         """Real client: consume recv_events; track agent_output_started/stopped; emit transcript_delta (optional), error, and interrupted on barge-in."""
-        nonlocal session, agent_output_started
+        nonlocal session, agent_output_started, transcript_context
         if session is None or not hasattr(session, "recv_events"):
             return
         try:
@@ -140,14 +170,15 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 elif ev.kind == "agent_output_stopped":
                     agent_output_started = False
                 elif ev.kind in ("transcript_delta", "user_transcript_delta") and ev.text:
-                    transcript_buffer.append(ev.text)
-                    full_text = "".join(transcript_buffer)
+                    delta_text = ev.text if isinstance(ev.text, str) else str(ev.text)
+                    # Keep rolling context for semantic scoring + coaching generation.
+                    transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
                     await send_json(
                         websocket,
                         {
                             "type": "transcript",
-                            "delta": ev.text,
-                            "full": full_text,
+                            "delta": delta_text,
+                            "full": transcript_context,
                             "ts": int(time.time() * 1000),
                         },
                     )
@@ -238,11 +269,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 # Reset tension state so tension can recover naturally after coaching
                 tension_state.silence_start = None
                 tension_state.overlap_timestamps.clear()
-                transcript_text = "".join(transcript_buffer)
                 coaching_result = await generate_coaching(
                     trigger=trigger,
                     tension_score=last_tension_score,
-                    transcript_buffer=transcript_text,
+                    transcript_buffer=transcript_context,
                     image_base64=latest_frame_base64,
                 )
                 whisper_msg: dict[str, Any] = {
@@ -325,14 +355,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
             elif t == "stop":
                 running = False
                 if tension_task:
-                    await telemetry_queue.put(None)
+                    signal_tension_stop()
                     tension_task.cancel()
                     try:
                         await tension_task
                     except asyncio.CancelledError:
                         pass
                 if session:
-                    await session.disconnect()
+                    await session.close()
                     session = None
                 if agent_task:
                     agent_task.cancel()
@@ -392,18 +422,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 rms_ema = rms_ema_ref[0]
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
-                transcript_text = "".join(transcript_buffer)
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
                     is_silence=is_silence,
                     is_overlap=barge_in_trigger,
                     ts=time.time(),
-                    semantic_score=compute_semantic_tension(transcript_text),
+                    semantic_score=compute_semantic_tension(transcript_context),
                 )
-                try:
-                    telemetry_queue.put_nowait(telemetry)
-                except asyncio.QueueFull:
-                    pass
+                enqueue_latest_telemetry(telemetry)
                 if session and not MOCK_MODE:
                     if barge_in_trigger:
                         if hasattr(session, "stop_generation"):
@@ -424,7 +450,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     finally:
         if session:
             try:
-                await session.disconnect()
+                await session.close()
             except Exception:
                 pass
         if tension_task and not tension_task.done():

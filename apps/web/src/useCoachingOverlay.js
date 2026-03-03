@@ -12,32 +12,34 @@ const HIGH_TENSION_HOLD_MS = 2000  // show overlay after 2s at high tension
  */
 export function useCoachingOverlay(tension) {
   const [showOverlay, setShowOverlay] = useState(false)
-  const qualifiedRef = useRef(false)  // true after 2s at high tension
   const timerRef = useRef(null)
 
   useEffect(() => {
     if (tension >= HIGH_TENSION_THRESHOLD) {
-      if (!timerRef.current) {
+      if (!timerRef.current && !showOverlay) {
         timerRef.current = setTimeout(() => {
-          qualifiedRef.current = true
           setShowOverlay(true)
           timerRef.current = null
         }, HIGH_TENSION_HOLD_MS)
       }
-    } else {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
-      if (tension < LOW_TENSION_THRESHOLD) {
-        qualifiedRef.current = false
-        setShowOverlay(false)
-      }
+      return
     }
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
+
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
     }
-  }, [tension])
+    if (tension < LOW_TENSION_THRESHOLD) {
+      setShowOverlay(false)
+    }
+  }, [tension, showOverlay])
+
+  useEffect(() => () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }, [])
 
   return { showOverlay }
 }

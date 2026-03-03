@@ -6,7 +6,6 @@ Four-signal formula: ~40% RMS, ~25% silence duration, ~15% overlap, ~20% semanti
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
@@ -118,13 +117,16 @@ async def compute_tension_loop(
     last_telemetry: AudioTelemetry | None = None
     try:
         while True:
-            try:
-                t = telemetry_queue.get_nowait()
+            # Drain queue each tick so we compute from the freshest sample.
+            # This prevents backlog growth when audio chunks arrive faster than interval_sec.
+            while True:
+                try:
+                    t = telemetry_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
                 if t is None:
                     return
                 last_telemetry = t
-            except asyncio.QueueEmpty:
-                pass
             if last_telemetry is not None:
                 score = compute_tension_from_telemetry(last_telemetry, state)
                 on_tension(score)

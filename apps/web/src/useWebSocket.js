@@ -89,19 +89,25 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
   const onMessageRef = useRef(onMessage)
   const onOutboundRef = useRef(onOutbound)
   const intentionalCloseRef = useRef(false)
+  const sessionRequestedRef = useRef(false)
   const lastStartConfigRef = useRef(null)
   const reconnectTimeoutRef = useRef(null)
   const reconnectAttemptRef = useRef(0)
   onMessageRef.current = onMessage
   onOutboundRef.current = onOutbound
 
-  const connect = useCallback((initialStartConfig = null) => {
+  const connect = useCallback((initialStartConfig = null, isReconnect = false) => {
     intentionalCloseRef.current = false
-    reconnectAttemptRef.current = 0
-    const startPayload = initialStartConfig && typeof initialStartConfig === 'object'
-      ? { type: 'start', config: initialStartConfig }
+    sessionRequestedRef.current = true
+    if (!isReconnect) reconnectAttemptRef.current = 0
+
+    if (!isReconnect) {
+      lastStartConfigRef.current = initialStartConfig
+    }
+    const startConfig = lastStartConfigRef.current
+    const startPayload = startConfig && typeof startConfig === 'object'
+      ? { type: 'start', config: startConfig }
       : { type: 'start' }
-    lastStartConfigRef.current = initialStartConfig
 
     if (useMock) {
       const mock = createMockWebSocket((msg) => onMessageRef.current?.(msg))
@@ -116,16 +122,22 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
     const ws = new WebSocket(url)
 
     const tryReconnect = () => {
-      if (intentionalCloseRef.current || reconnectAttemptRef.current >= RECONNECT_MAX_ATTEMPTS) return
+      if (intentionalCloseRef.current || !sessionRequestedRef.current) return
+      if (reconnectAttemptRef.current >= RECONNECT_MAX_ATTEMPTS) return
       reconnectAttemptRef.current += 1
       setLastError('Connection lost. Reconnecting…')
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = setTimeout(() => {
-        connect(lastStartConfigRef.current)
+        connect(lastStartConfigRef.current, true)
       }, RECONNECT_DELAY_MS)
     }
 
     ws.onopen = () => {
       reconnectAttemptRef.current = 0
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
       setConnected(true)
       setLastError(null)
       ws.send(JSON.stringify(startPayload))
@@ -134,7 +146,7 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
     ws.onclose = () => {
       setConnected(false)
       wsRef.current = null
-      if (!intentionalCloseRef.current && lastStartConfigRef.current != null) {
+      if (!intentionalCloseRef.current && sessionRequestedRef.current) {
         tryReconnect()
       }
     }
@@ -152,6 +164,7 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true
+    sessionRequestedRef.current = false
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
