@@ -17,6 +17,7 @@ $CoachingGrounding = if ($env:COACHING_GROUNDING) { $env:COACHING_GROUNDING } el
 $CoachingLiveAudio = if ($env:COACHING_LIVE_AUDIO) { $env:COACHING_LIVE_AUDIO } else { "1" }
 $LiveBackchannel = if ($env:LIVE_BACKCHANNEL) { $env:LIVE_BACKCHANNEL } else { "1" }
 $GeminiReconnect = if ($env:GEMINI_RECONNECT) { $env:GEMINI_RECONNECT } else { "1" }
+$GeminiLiveUseDictConfig = if ($env:GEMINI_LIVE_USE_DICT_CONFIG) { $env:GEMINI_LIVE_USE_DICT_CONFIG } else { "1" }
 
 if (-not $ProjectId) {
     Write-Error "Usage: .\deploy.ps1 -ProjectId PROJECT_ID [-Region REGION]"
@@ -48,7 +49,7 @@ gcloud run deploy $ServiceName `
   --timeout 3600 `
   --concurrency 10 `
   --min-instances 1 `
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,GEMINI_RECONNECT=$GeminiReconnect"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,GEMINI_RECONNECT=$GeminiReconnect,GEMINI_LIVE_USE_DICT_CONFIG=$GeminiLiveUseDictConfig"
 
 $ServiceUrl = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(status.url)"
 $SaEmail = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(spec.template.spec.serviceAccountName)"

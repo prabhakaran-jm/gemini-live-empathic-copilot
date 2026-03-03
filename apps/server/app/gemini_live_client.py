@@ -20,8 +20,9 @@ GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
-# Set to 1 to force dict config for main session (to test if typed LiveConnectConfig causes receive() to yield no messages)
-GEMINI_LIVE_USE_DICT_CONFIG = os.environ.get("GEMINI_LIVE_USE_DICT_CONFIG", "").strip().lower() in ("1", "true", "yes")
+# Default dict config for main session; typed config can be re-enabled with GEMINI_LIVE_USE_DICT_CONFIG=0.
+# This is more resilient across SDK variants for realtime transcription fields.
+GEMINI_LIVE_USE_DICT_CONFIG = os.environ.get("GEMINI_LIVE_USE_DICT_CONFIG", "1").strip().lower() in ("1", "true", "yes")
 
 
 # --- Events yielded by recv_events() ---
@@ -430,6 +431,11 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                 },
                 "input_audio_transcription": {},
                 "output_audio_transcription": {},
+                "realtime_input_config": {
+                    "automatic_activity_detection": {
+                        "disabled": False,
+                    }
+                },
                 "system_instruction": {"parts": [{"text": system_text}]},
             }
             if GEMINI_LIVE_USE_DICT_CONFIG:
@@ -456,6 +462,17 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                     else:
                         logger.warning(
                             "AudioTranscriptionConfig not found in SDK; typed config may omit transcription"
+                        )
+                    aad_cls = getattr(types, "AutomaticActivityDetection", None)
+                    ric_cls = getattr(types, "RealtimeInputConfig", None)
+                    if aad_cls is not None and ric_cls is not None:
+                        kwargs["realtime_input_config"] = ric_cls(
+                            automatic_activity_detection=aad_cls(disabled=False)
+                        )
+                    else:
+                        logger.warning(
+                            "RealtimeInputConfig/AutomaticActivityDetection not found in SDK; "
+                            "typed config may rely on defaults for VAD"
                         )
                     live_config = types.LiveConnectConfig(**kwargs)
                     logger.info("Using LiveConnectConfig (typed) for main session")
