@@ -126,6 +126,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
         self._cm = _cm  # async context manager, for __aexit__ on close
         self._closed = False
         self._interrupted = False
+        self._sent_audio_chunks = 0
         self._event_queue: asyncio.Queue[LiveEvent | None] = asyncio.Queue()
 
     async def send_audio(self, pcm_base64: str) -> None:
@@ -140,6 +141,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             await self._session.send_realtime_input(
                 audio=types.Blob(data=raw, mime_type="audio/pcm;rate=16000")
             )
+            self._sent_audio_chunks += 1
         except Exception as e:
             logger.warning("send_realtime_input failed: %s", e)
             self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
@@ -302,6 +304,23 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                             )
                     if getattr(sc, "interrupted", None) or getattr(sc, "turn_complete", None):
                         self._event_queue.put_nowait(LiveEvent(kind="agent_output_stopped"))
+                    # Some SDK variants surface transcriptions under output_* fields.
+                    output_tx = getattr(sc, "output_transcription", None) or getattr(
+                        sc, "output_audio_transcription", None
+                    )
+                    if output_tx:
+                        output_text = (
+                            getattr(output_tx, "text", None)
+                            or getattr(output_tx, "transcript", None)
+                            or (getattr(output_tx, "content", None) if isinstance(getattr(output_tx, "content", None), str) else None)
+                        )
+                        if output_text:
+                            self._event_queue.put_nowait(
+                                LiveEvent(
+                                    kind="transcript_delta",
+                                    text=output_text if isinstance(output_text, str) else str(output_text),
+                                )
+                            )
                 # --- top-level .text shorthand ---
                 if getattr(msg, "text", None) and msg.text:
                     self._event_queue.put_nowait(
@@ -324,6 +343,12 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             if not self._closed:
                 self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
         finally:
+            if _total_msgs == 0 and self._sent_audio_chunks > 0:
+                logger.warning(
+                    "Gemini Live returned 0 recv messages after %s audio chunks. "
+                    "Likely config/region transcription mismatch.",
+                    self._sent_audio_chunks,
+                )
             logger.info("_receive_loop ended (received %s messages from Gemini Live)", _total_msgs)
             self._event_queue.put_nowait(None)
 
@@ -404,6 +429,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                     "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
                 },
                 "input_audio_transcription": {},
+                "output_audio_transcription": {},
                 "system_instruction": {"parts": [{"text": system_text}]},
             }
             if GEMINI_LIVE_USE_DICT_CONFIG:
@@ -422,8 +448,15 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                         ),
                         "system_instruction": types.Content(parts=[types.Part.from_text(text=system_text)]),
                     }
-                    if getattr(types, "InputAudioTranscription", None) is not None:
-                        kwargs["input_audio_transcription"] = types.InputAudioTranscription()
+                    # SDK expects AudioTranscriptionConfig for input/output transcription.
+                    atc_cls = getattr(types, "AudioTranscriptionConfig", None)
+                    if atc_cls is not None:
+                        kwargs["input_audio_transcription"] = atc_cls()
+                        kwargs["output_audio_transcription"] = atc_cls()
+                    else:
+                        logger.warning(
+                            "AudioTranscriptionConfig not found in SDK; typed config may omit transcription"
+                        )
                     live_config = types.LiveConnectConfig(**kwargs)
                     logger.info("Using LiveConnectConfig (typed) for main session")
                 except Exception as e:
