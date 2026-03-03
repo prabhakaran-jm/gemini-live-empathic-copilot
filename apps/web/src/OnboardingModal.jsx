@@ -1,6 +1,9 @@
 /**
  * First-run onboarding: short guided steps. Shown once per device (localStorage).
+ * Traps focus inside the modal for accessibility (Tab cycles within the dialog).
  */
+import { useEffect, useRef } from 'react'
+
 export const ONBOARDING_STORAGE_KEY = 'empathic-copilot-onboarding-dismissed'
 
 export function getOnboardingSeen() {
@@ -35,10 +38,38 @@ function StepText({ text }) {
   )
 }
 
+const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+
 export default function OnboardingModal({ onDismiss }) {
+  const cardRef = useRef(null)
+
   const handleBackdropClick = (e) => {
     if (e.target === e.currentTarget) onDismiss()
   }
+
+  useEffect(() => {
+    const card = cardRef.current
+    if (!card) return
+    const focusables = card.querySelectorAll(FOCUSABLE)
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    const handleKeyDown = (e) => {
+      if (e.key !== 'Tab') return
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault()
+          last?.focus()
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault()
+          first?.focus()
+        }
+      }
+    }
+    card.addEventListener('keydown', handleKeyDown)
+    return () => card.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   return (
     <div
@@ -48,7 +79,7 @@ export default function OnboardingModal({ onDismiss }) {
       aria-modal="true"
       onClick={handleBackdropClick}
     >
-      <div className="onboarding-modal__card" onClick={(e) => e.stopPropagation()}>
+      <div ref={cardRef} className="onboarding-modal__card" onClick={(e) => e.stopPropagation()}>
         <h2 id="onboarding-title" className="onboarding-modal__title">
           Quick start
         </h2>

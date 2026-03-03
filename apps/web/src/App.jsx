@@ -67,6 +67,7 @@ function speakWhisper(text) {
 }
 
 let currentWhisperAudioCtx = null
+let lastWhisperPlayedAt = 0
 
 function playWhisperAudio(base64Pcm) {
   try {
@@ -118,6 +119,63 @@ function playWhisperAudio(base64Pcm) {
   return true
 }
 
+let currentBackchannelCtx = null
+
+function playBackchannelAudio(base64Pcm) {
+  try {
+    // Suppress if a coaching whisper played in the last 5 seconds
+    if (Date.now() - lastWhisperPlayedAt < 5000) return true // swallow silently
+
+    const raw = atob(base64Pcm)
+    const buf = new ArrayBuffer(raw.length)
+    const view = new Uint8Array(buf)
+    for (let i = 0; i < raw.length; i += 1) view[i] = raw.charCodeAt(i)
+
+    if (buf.byteLength % 2 !== 0) return false
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (!AudioCtx) return false
+
+    // Stop previous backchannel if still playing
+    if (currentBackchannelCtx) {
+      try {
+        currentBackchannelCtx.close()
+      } catch {
+        /* ignore */
+      }
+      currentBackchannelCtx = null
+    }
+
+    const ctx = new AudioCtx({ sampleRate: 24000 })
+    currentBackchannelCtx = ctx
+
+    const int16 = new Int16Array(buf)
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i += 1) {
+      float32[i] = int16[i] / 32768
+    }
+
+    const audioBuffer = ctx.createBuffer(1, float32.length, 24000)
+    audioBuffer.getChannelData(0).set(float32)
+
+    const source = ctx.createBufferSource()
+    const gain = ctx.createGain()
+    gain.gain.value = 0.18 // Very soft — background acknowledgment, not foreground
+    source.buffer = audioBuffer
+    source.connect(gain).connect(ctx.destination)
+    source.onended = () => {
+      ctx.close()
+      if (currentBackchannelCtx === ctx) currentBackchannelCtx = null
+    }
+    source.start()
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.debug('Backchannel audio playback failed (non-critical)', err)
+    return false
+  }
+  return true
+}
+
 /** True when URL has ?debug=1 (show Advanced + Event log). */
 function isDebugUrl() {
   if (typeof window === 'undefined') return false
@@ -164,6 +222,7 @@ export default function App() {
       addLog('in', { type: 'tension', score: msg.score })
     } else if (msg.type === 'whisper') {
       setWhisper({ text: msg.text, move: msg.move })
+      lastWhisperPlayedAt = Date.now()
       // Prefer Gemini Live audio; fall back to Web Speech API
       if (msg.audio_base64) {
         const ok = playWhisperAudio(msg.audio_base64)
@@ -183,6 +242,8 @@ export default function App() {
       } else if (msg.delta != null) {
         setTranscript((prev) => (prev + msg.delta).slice(-MAX_TRANSCRIPT_LEN))
       }
+    } else if (msg.type === 'backchannel_audio') {
+      if (msg.audio_base64) playBackchannelAudio(msg.audio_base64)
     } else if (msg.type === 'event') {
       addLog('in', { type: 'event', name: msg.name })
     } else if (msg.type === 'error') {
@@ -307,6 +368,14 @@ export default function App() {
 
   const handleStop = () => {
     window.speechSynthesis?.cancel()
+    if (currentBackchannelCtx) {
+      try {
+        currentBackchannelCtx.close()
+      } catch {
+        /* ignore */
+      }
+      currentBackchannelCtx = null
+    }
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current)
       frameIntervalRef.current = null
@@ -417,9 +486,9 @@ export default function App() {
       {/* Status cards: transcript, whisper (tension is in start card via TensionVisualizer) */}
       <div className="status-cards">
         {!useMock && (
-          <section className="transcript-section" aria-label="Live transcript">
+          <section className="transcript-section" aria-label="Live transcript" aria-live="polite">
             <h2 className="transcript-heading">Live Transcript</h2>
-            <div className="transcript-text" title={transcript || 'Speak to see live transcription.'}>
+            <div className="transcript-text" title={transcript || 'Speak to see live transcription.'} aria-live="polite">
               {transcript || (sessionActive ? 'Listening…' : '')}
             </div>
             {sessionActive && (

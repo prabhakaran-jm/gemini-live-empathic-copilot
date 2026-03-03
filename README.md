@@ -29,16 +29,22 @@ Full steps: [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md).
 
 ## Key Features
 
-🎙 Live bidirectional audio streaming (Gemini Live API)  
+🎙 Live bidirectional audio streaming (Gemini Live API) with empathetic backchanneling  
 🔁 Interruptible coaching (barge-in support)  
-📊 Real-time tension indicator  
-🧠 Signal-based conversational analysis (volume spikes, silence, overlap)  
+📊 Real-time tension indicator (4 signals: volume, silence, interruptions, escalation language)  
+🧠 Signal-based conversational analysis (volume, silence, overlap, semantic markers)  
 🎧 Whisper-style short coaching prompts  
 ☁ Hosted on Google Cloud (Cloud Run + Vertex AI)
 
 **What's implemented in MVP (locked scope):** WebSocket session start/stop; mic → PCM 16 kHz → backend; tension score from RMS/silence/overlap; deterministic whisper rules (tension cross → slow_down, 2× barge-in → reflect_back, post-escalation silence → clarify_intent); live transcript via Gemini Live; barge-in detection and `event: interrupted`; degraded mode when Gemini is unavailable (tension + whispers only); Cloud Run deploy with health check; frontend backend indicator (Local / Cloud Run). **Optional:** webcam (vision) for context-aware coaching; Google Search grounding for coaching (env `COACHING_GROUNDING=1`).
 
 **Degraded mode:** If Gemini Live connect fails (auth, quota, or model error), the session does not fail. The backend runs in "local-only" mode: tension updates and the whisper loop keep running; transcript streaming is disabled. The client receives one `error` message: "Gemini unavailable; running local coaching only." Stop/cleanup works as usual.
+
+## How it works
+
+1. **You talk** — The mic picks up your conversation in real time and sends audio to the backend.
+2. **We listen** — Gemini transcribes your speech while a tension engine scores volume, silence, and interruptions.
+3. **We whisper** — When tension rises, Gemini generates a calm coaching tip and speaks it softly through your speakers (Gemini Live TTS by default, or browser fallback).
 
 ## Architecture
 
@@ -109,6 +115,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 | `BARGE_IN_RMS_THRESHOLD` | RMS threshold for barge-in (default `0.15`). |
 | `COACHING_GROUNDING` | Set to `1` to enable Google Search grounding for coaching (NVC/citations). Default `0`. |
 | `COACHING_LIVE_AUDIO` | Set to `1` to use Gemini Live TTS for coaching whispers (PCM16 mono 24 kHz). Default `1`; set to `0` for browser Web Speech API only. |
+| `LIVE_BACKCHANNEL` | Set to `1` (default) to enable Gemini Live empathetic backchanneling ("Mmhm", "I see"). Set to `0` for silent transcription only. |
 
 **Auth (choose one):**
 

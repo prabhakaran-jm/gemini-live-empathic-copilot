@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from typing import Any
 
 from fastapi import WebSocket
@@ -16,11 +17,12 @@ from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
+    LIVE_BACKCHANNEL,
     LiveSessionConfig,
     generate_whisper_audio,
     get_gemini_client,
 )
-from app.tension import AudioTelemetry, TensionState, compute_tension_loop
+from app.tension import AudioTelemetry, TensionState, compute_semantic_tension, compute_tension_loop
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
     rms_ema_ref: list[float] = [0.0]
     last_tension_score: int = 0
     prev_tension_score: int = 0
-    tension_history: list[tuple[float, int]] = []
+    tension_history: deque[tuple[float, int]] = deque()
     last_whisper_ts: float = 0.0
-    interrupted_events: list[float] = []
+    interrupted_events: deque[float] = deque()
     transcript_buffer: list[str] = []
     latest_frame_base64: str | None = None  # optional webcam frame for vision-aware coaching
 
@@ -76,7 +78,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
         now = time.time()
         tension_history.append((now, score))
         while tension_history and now - tension_history[0][0] > TENSION_HIGH_WINDOW_SEC:
-            tension_history.pop(0)
+            tension_history.popleft()
         asyncio.create_task(
             send_json(websocket, {"type": "tension", "score": score, "ts": int(now * 1000)})
         )
@@ -135,6 +137,18 @@ async def handle_websocket(websocket: WebSocket) -> None:
                             "ts": int(time.time() * 1000),
                         },
                     )
+                elif ev.kind == "backchannel_audio" and ev.audio_base64:
+                    # Suppress backchannel if a coaching whisper was sent recently (within 5s)
+                    now = time.time()
+                    if now - last_whisper_ts >= 5.0:
+                        await send_json(
+                            websocket,
+                            {
+                                "type": "backchannel_audio",
+                                "audio_base64": ev.audio_base64,
+                                "ts": int(now * 1000),
+                            },
+                        )
                 elif ev.kind == "error":
                     await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
         except asyncio.CancelledError:
@@ -317,11 +331,13 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 rms_ema = rms_ema_ref[0]
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
+                transcript_text = "".join(transcript_buffer)
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
                     is_silence=is_silence,
                     is_overlap=barge_in_trigger,
                     ts=time.time(),
+                    semantic_score=compute_semantic_tension(transcript_text),
                 )
                 try:
                     telemetry_queue.put_nowait(telemetry)
@@ -334,7 +350,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         now_ts = time.time()
                         interrupted_events.append(now_ts)
                         while interrupted_events and now_ts - interrupted_events[0] > OVERLAP_WINDOW_SEC:
-                            interrupted_events.pop(0)
+                            interrupted_events.popleft()
                         await send_json(
                             websocket,
                             {"type": "event", "name": "interrupted", "ts": int(now_ts * 1000)},

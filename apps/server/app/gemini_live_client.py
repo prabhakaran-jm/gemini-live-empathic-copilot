@@ -19,6 +19,7 @@ GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
 
 
 # --- Events yielded by recv_events() ---
@@ -26,9 +27,10 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMIN
 @dataclass
 class LiveEvent:
     """One event from the live session."""
-    kind: str  # "transcript_delta" | "user_transcript_delta" | "agent_output_started" | "agent_output_stopped" | "error"
+    kind: str  # "transcript_delta" | "user_transcript_delta" | "backchannel_audio" | "agent_output_started" | "agent_output_stopped" | "error"
     text: str = ""
     message: str = ""
+    audio_base64: str = ""  # base64-encoded PCM audio (for backchannel_audio events)
 
 
 # --- Config and interfaces ---
@@ -202,15 +204,30 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                                     LiveEvent(kind="user_transcript_delta", text=alt_text if isinstance(alt_text, str) else str(alt_text))
                                 )
                                 break
-                    # --- model_turn text parts (non-native models, or model responses) ---
+                    # --- model_turn: text parts + audio (backchannel) ---
                     mt = getattr(sc, "model_turn", None)
                     if mt and getattr(mt, "parts", None):
+                        audio_chunks: list[bytes] = []
                         for part in mt.parts:
+                            # Text content (transcript)
                             t = getattr(part, "text", None) or getattr(part, "content", None)
                             if t:
                                 self._event_queue.put_nowait(
                                     LiveEvent(kind="transcript_delta", text=t if isinstance(t, str) else str(t))
                                 )
+                            # Audio content (backchannel from native-audio model)
+                            inline = getattr(part, "inline_data", None)
+                            if inline is not None:
+                                data = getattr(inline, "data", None)
+                                if isinstance(data, (bytes, bytearray)):
+                                    audio_chunks.append(bytes(data))
+                        # Emit collected audio as a single backchannel event
+                        if audio_chunks and LIVE_BACKCHANNEL:
+                            raw = b"".join(audio_chunks)
+                            b64 = base64.b64encode(raw).decode("ascii")
+                            self._event_queue.put_nowait(
+                                LiveEvent(kind="backchannel_audio", audio_base64=b64)
+                            )
                     if getattr(sc, "interrupted", None) or getattr(sc, "turn_complete", None):
                         self._event_queue.put_nowait(LiveEvent(kind="agent_output_stopped"))
                 # --- top-level .text shorthand ---
@@ -242,8 +259,8 @@ class RealGeminiLiveSession(IGeminiLiveSession):
                 break
             if ev is None:
                 return
-            # user_transcript_delta: pass through without agent-speaking logic
-            if ev.kind == "user_transcript_delta":
+            # user_transcript_delta and backchannel_audio: pass through without agent-speaking logic
+            if ev.kind in ("user_transcript_delta", "backchannel_audio"):
                 yield ev
                 continue
             if ev.kind == "transcript_delta" and not agent_speaking:
@@ -281,7 +298,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         if is_native_audio:
             # Native-audio models REQUIRE response_modalities=["AUDIO"].
             # We add input_audio_transcription to receive text transcripts
-            # of the user's speech, and instruct the model to stay quiet.
+            # of the user's speech. When LIVE_BACKCHANNEL=1, model may emit minimal backchannels.
             live_config = {
                 "response_modalities": ["AUDIO"],
                 "speech_config": {
@@ -292,10 +309,25 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                     "parts": [
                         {
                             "text": (
-                                "You are an invisible listening assistant. "
-                                "Your ONLY job is to transcribe what the user says. "
-                                "Do NOT speak, do NOT generate audio output, do NOT respond. "
-                                "Stay completely silent."
+                                (
+                                    "You are an empathetic listening companion in a real-time conversation. "
+                                    "Your role is minimal backchannel feedback only. "
+                                    "Rules:\n"
+                                    "- Respond ONLY with very short acknowledgments: 'Mmhm', 'I see', 'Go on', 'Right', 'Okay', 'Yeah'.\n"
+                                    "- NEVER say more than 3 words at a time.\n"
+                                    "- NEVER give advice, opinions, questions, or commentary.\n"
+                                    "- NEVER repeat or paraphrase what the user said.\n"
+                                    "- Respond infrequently — only every 10-15 seconds of user speech, not after every sentence.\n"
+                                    "- Use a calm, soft, gentle tone.\n"
+                                    "- If unsure, stay silent. Silence is always acceptable."
+                                )
+                                if LIVE_BACKCHANNEL
+                                else (
+                                    "You are an invisible listening assistant. "
+                                    "Your ONLY job is to transcribe what the user says. "
+                                    "Do NOT speak, do NOT generate audio output, do NOT respond. "
+                                    "Stay completely silent."
+                                )
                             )
                         }
                     ]

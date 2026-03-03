@@ -36,11 +36,12 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
      - Mac/Linux: `export VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws`
      - Windows: `$env:VITE_WS_URL="wss://YOUR_CLOUD_RUN_URL/ws"`
    - Open http://localhost:5173 (or add `?debug=1` to see Advanced/RMS and Event log).
+   - **Note:** Coaching whispers use **Gemini Live TTS** by default (`COACHING_LIVE_AUDIO=1` on the backend). You should *hear* the whisper as well as see the text; if not, the backend may be using Web Speech fallback.
 
 4. **Test script**
    - Click **Start session**. Allow microphone when prompted. UI should show "Backend: Cloud Run" and session active.
    - **Transcript:** Speak normally (e.g. "I’m practicing a difficult conversation"). Within a few seconds you should see live transcript in the UI.
-   - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; after a short delay you may see a coaching whisper (e.g. "Taking a breath before the next sentence can help.").
+   - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; after a short delay you should see *and hear* a coaching whisper (e.g. "Taking a breath before the next sentence can help.") — audio is from Gemini Live when `COACHING_LIVE_AUDIO` is enabled (default).
    - **Barge-in / interrupted:** While the agent is speaking (or during a period when it would be generating), keep talking or interrupt. With `?debug=1` in the URL, open the **Event log** to see entries (e.g. `event: interrupted`).
    - There is no separate "Ask coach" button; coaching is triggered automatically by the backend from volume, silence, and overlap. Agent output is the live transcript plus these whisper lines.
    - Click **Stop session** when done.

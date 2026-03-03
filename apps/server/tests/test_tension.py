@@ -7,8 +7,10 @@ import pytest
 from app.tension import (
     AudioTelemetry,
     TensionState,
+    compute_semantic_tension,
     compute_tension_from_telemetry,
     compute_tension_loop,
+    ESCALATION_MARKERS,
 )
 
 
@@ -84,3 +86,49 @@ async def test_tension_loop_stops_on_none():
     queue.put_nowait(None)
     await task
     assert len(scores) >= 1
+
+
+# --- Semantic tension (4th signal) ---
+
+
+def test_semantic_tension_empty_returns_zero():
+    """No transcript text yields 0 semantic tension."""
+    assert compute_semantic_tension("") == 0.0
+    assert compute_semantic_tension(None) == 0.0
+
+
+def test_semantic_tension_no_markers():
+    """Neutral text yields 0 semantic tension."""
+    assert compute_semantic_tension("I think we should talk about the project timeline") == 0.0
+
+
+def test_semantic_tension_single_marker():
+    """One escalation marker yields 0.25."""
+    # Use a phrase that matches only one marker (e.g. "ridiculous" only; "always" + "you always" would be 2)
+    assert compute_semantic_tension("This is ridiculous") == 0.25
+
+
+def test_semantic_tension_multiple_markers():
+    """Multiple markers accumulate (0.25 each, capped at 1.0)."""
+    text = "You always do this, you never listen, it's your fault, whatever"
+    score = compute_semantic_tension(text)
+    assert score >= 0.75  # at least 3 hits: "always", "you never", "your fault", "whatever"
+
+
+def test_semantic_tension_capped_at_one():
+    """Score cannot exceed 1.0 regardless of marker count."""
+    text = " ".join(ESCALATION_MARKERS[:10])  # many markers
+    assert compute_semantic_tension(text) == 1.0
+
+
+def test_semantic_tension_case_insensitive():
+    """Matching is case-insensitive."""
+    assert compute_semantic_tension("This is RIDICULOUS") == 0.25
+
+
+def test_semantic_tension_uses_last_200_chars():
+    """Only the last ~200 characters are analyzed."""
+    padding = "a " * 200  # >200 chars of neutral text
+    text = "you always do this " + padding
+    # "you always" is beyond the 200-char tail
+    assert compute_semantic_tension(text) == 0.0
