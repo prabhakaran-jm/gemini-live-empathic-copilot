@@ -35,13 +35,13 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
    - Point the app at the deployed backend (do this *before* `npm run dev`):
      - Mac/Linux: `export VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws`
      - Windows: `$env:VITE_WS_URL="wss://YOUR_CLOUD_RUN_URL/ws"`
-   - Open http://localhost:5173.
+   - Open http://localhost:5173 (or add `?debug=1` to see Advanced/RMS and Event log).
 
 4. **Test script**
    - Click **Start session**. Allow microphone when prompted. UI should show "Backend: Cloud Run" and session active.
    - **Transcript:** Speak normally (e.g. "I’m practicing a difficult conversation"). Within a few seconds you should see live transcript in the UI.
    - **Tension + whisper:** Raise your voice briefly (e.g. say something louder). The tension bar should increase; after a short delay you may see a coaching whisper (e.g. "Taking a breath before the next sentence can help.").
-   - **Barge-in / interrupted:** While the agent is speaking (or during a period when it would be generating), keep talking or interrupt. In the **Event log** you should see an `event: interrupted` (or similar) entry.
+   - **Barge-in / interrupted:** While the agent is speaking (or during a period when it would be generating), keep talking or interrupt. With `?debug=1` in the URL, open the **Event log** to see entries (e.g. `event: interrupted`).
    - There is no separate "Ask coach" button; coaching is triggered automatically by the backend from volume, silence, and overlap. Agent output is the live transcript plus these whisper lines.
    - Click **Stop session** when done.
 

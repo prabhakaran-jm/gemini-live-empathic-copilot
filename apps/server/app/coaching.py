@@ -163,17 +163,32 @@ async def generate_coaching(
             contents=contents_arg,
             config=genai.types.GenerateContentConfig(**config_kw),
         )
-        text = response.text.strip().strip('"').strip("'")
+        text = getattr(response, "text", None)
+        if not text or not isinstance(text, str):
+            logger.warning(
+                "Coaching fallback: parse failure (no or invalid response.text); using fallback"
+            )
+            raise ValueError("No response text") from None
+        text = text.strip().strip('"').strip("'")
         word_count = len(text.split())
         if word_count < 5 or word_count > 25:
+            logger.warning(
+                "Coaching fallback: word count out of range (got %d, allowed 5–25); using fallback",
+                word_count,
+            )
             raise ValueError(f"Unexpected word count: {word_count}")
         logger.info("AI coaching [%s]: %s", trigger, text)
         return {"move": trigger, "text": text}
+    except ValueError as e:
+        if "word count" in str(e) or "No response text" in str(e):
+            pass
+        else:
+            logger.warning("Coaching fallback: validation error: %s", e)
     except Exception as e:
-        logger.warning("Coaching generation failed, using fallback: %s", e)
-        fallback_id = FALLBACK_MOVES.get(trigger, "slow_down")
-        entry = get_move_by_id(fallback_id)
-        return entry or COACHING_MOVES[0]
+        logger.warning("Coaching fallback: generation failed (%s): %s", type(e).__name__, e)
+    fallback_id = FALLBACK_MOVES.get(trigger, "slow_down")
+    entry = get_move_by_id(fallback_id)
+    return entry or COACHING_MOVES[0]
 
 
 def get_move_by_id(move_id: str) -> dict[str, str] | None:

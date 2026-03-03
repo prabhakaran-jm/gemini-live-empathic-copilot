@@ -79,19 +79,30 @@ function createMockWebSocket(onMessage) {
   }
 }
 
+const RECONNECT_DELAY_MS = 2000
+const RECONNECT_MAX_ATTEMPTS = 5
+
 export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
   const [connected, setConnected] = useState(false)
   const [lastError, setLastError] = useState(null)
   const wsRef = useRef(null)
   const onMessageRef = useRef(onMessage)
   const onOutboundRef = useRef(onOutbound)
+  const intentionalCloseRef = useRef(false)
+  const lastStartConfigRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
+  const reconnectAttemptRef = useRef(0)
   onMessageRef.current = onMessage
   onOutboundRef.current = onOutbound
 
   const connect = useCallback((initialStartConfig = null) => {
+    intentionalCloseRef.current = false
+    reconnectAttemptRef.current = 0
     const startPayload = initialStartConfig && typeof initialStartConfig === 'object'
       ? { type: 'start', config: initialStartConfig }
       : { type: 'start' }
+    lastStartConfigRef.current = initialStartConfig
+
     if (useMock) {
       const mock = createMockWebSocket((msg) => onMessageRef.current?.(msg))
       wsRef.current = mock
@@ -100,16 +111,36 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
       onOutboundRef.current?.(startPayload)
       return
     }
+
     const url = getWsUrl()
     const ws = new WebSocket(url)
+
+    const tryReconnect = () => {
+      if (intentionalCloseRef.current || reconnectAttemptRef.current >= RECONNECT_MAX_ATTEMPTS) return
+      reconnectAttemptRef.current += 1
+      setLastError('Connection lost. Reconnecting…')
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connect(lastStartConfigRef.current)
+      }, RECONNECT_DELAY_MS)
+    }
+
     ws.onopen = () => {
+      reconnectAttemptRef.current = 0
       setConnected(true)
       setLastError(null)
       ws.send(JSON.stringify(startPayload))
       onOutboundRef.current?.(startPayload)
     }
-    ws.onclose = () => setConnected(false)
-    ws.onerror = () => setLastError('WebSocket error')
+    ws.onclose = () => {
+      setConnected(false)
+      wsRef.current = null
+      if (!intentionalCloseRef.current && lastStartConfigRef.current != null) {
+        tryReconnect()
+      }
+    }
+    ws.onerror = () => {
+      setLastError('WebSocket error')
+    }
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data)
@@ -120,11 +151,19 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
   }, [useMock])
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
+    lastStartConfigRef.current = null
+    reconnectAttemptRef.current = RECONNECT_MAX_ATTEMPTS
     setConnected(false)
+    setLastError(null)
   }, [])
 
   const send = useCallback((obj) => {
@@ -135,6 +174,10 @@ export function useWebSocket({ onMessage, onOutbound, useMock = USE_MOCK }) {
 
   useEffect(() => {
     return () => {
+      intentionalCloseRef.current = true
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
       if (wsRef.current) wsRef.current.close()
     }
   }, [])

@@ -21,7 +21,7 @@ Expect `{"status":"ok"}`.
 
 To use the deployed backend, set the WebSocket URL before starting (Mac/Linux: `export VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` then `npm run dev`; Windows: `$env:VITE_WS_URL="wss://YOUR_CLOUD_RUN_URL/ws"; npm run dev`).
 
-**(c) What to do** — Open the app (e.g. http://localhost:5173), click **Start session**, allow mic. **Look for:** live **Transcript**, **Tension** bar, **Whisper** coaching lines, and **Event** log entries (e.g. `interrupted` when you talk over the agent). Click **Stop session** when done.
+**(c) What to do** — Open the app (e.g. http://localhost:5173), click **Start session**, allow mic. **Look for:** live **Transcript**, **Tension** bar, and **Whisper** coaching lines. Add `?debug=1` to the URL to show the **Advanced** section (RMS) and **Event log**. Click **Stop session** when done.
 
 Full steps: [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md).
 
@@ -106,6 +106,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 | `GOOGLE_CLOUD_REGION` | Region (default `europe-west1`; must be a [Live model–supported region](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-live-api)). |
 | `GEMINI_MODEL` | Gemini Live model (default `gemini-live-2.5-flash-native-audio`). |
 | `BARGE_IN_RMS_THRESHOLD` | RMS threshold for barge-in (default `0.15`). |
+| `COACHING_LIVE_AUDIO` | Set to `1` to enable Gemini Live audio synthesis for coaching whispers (PCM16 mono 24 kHz). Default `0` (browser Web Speech API only). |
 
 **Auth (choose one):**
 

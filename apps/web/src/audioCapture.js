@@ -1,6 +1,6 @@
 /**
  * Microphone capture: PCM16 mono 16 kHz, with RMS per chunk.
- * Uses ScriptProcessor (fallback); AudioWorklet can be added for production.
+ * Prefers AudioWorklet when available; falls back to ScriptProcessor (deprecated).
  * Chunks are 20–100 ms (configurable); backend expects base64 PCM + optional telemetry.rms.
  */
 
@@ -40,22 +40,59 @@ function computeRms(float32) {
   return Math.min(1, rms)
 }
 
-/**
- * Start microphone capture. Returns { stop, stream }.
- * onChunk({ pcmBase64, rms }) is called for each chunk (PCM16 mono 16 kHz).
- * Uses ScriptProcessor; use AudioWorklet when available for production.
- */
-export async function startAudioCapture({ onChunk }) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
-  const source = audioContext.createMediaStreamSource(stream)
-  const inRate = audioContext.sampleRate
+function pcmBufferToBase64(int16Buffer) {
+  const bytes = new Uint8Array(int16Buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
 
-  // Buffer to accumulate input until we have enough for one 16 kHz chunk
+/**
+ * Start capture using AudioWorklet (preferred). Returns { stop, stream } or null if not supported.
+ */
+async function startWithWorklet(audioContext, source, stream, onChunk) {
+  if (!audioContext.audioWorklet) return null
+  const workletUrl = `${window.location.origin}/audioCaptureWorklet.js`
+  try {
+    await audioContext.audioWorklet.addModule(workletUrl)
+  } catch (_) {
+    return null
+  }
+  const node = new AudioWorkletNode(audioContext, 'capture-processor', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    processorOptions: { sampleRate: audioContext.sampleRate },
+  })
+  node.port.onmessage = (e) => {
+    const { pcm, rms } = e.data
+    if (!pcm || pcm.byteLength === 0) return
+    const int16 = new Int16Array(pcm)
+    const pcmBase64 = pcmBufferToBase64(int16)
+    onChunk({ pcmBase64, rms, bytesLength: int16.byteLength })
+  }
+  source.connect(node)
+  node.connect(audioContext.destination)
+  return {
+    stop() {
+      node.disconnect()
+      source.disconnect()
+      stream.getTracks().forEach((t) => t.stop())
+      try {
+        audioContext.close()
+      } catch (_) {}
+    },
+    stream,
+  }
+}
+
+/**
+ * Start capture using ScriptProcessor (deprecated fallback).
+ */
+function startWithScriptProcessor(audioContext, source, stream, onChunk) {
+  const inRate = audioContext.sampleRate
   const inputSamplesPerChunk = Math.ceil((CHUNK_SAMPLES_16K * inRate) / TARGET_SAMPLE_RATE)
   let buffer = new Float32Array(0)
   let bufferOffset = 0
-
   const bufferSize = 2048
   const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
   scriptNode.onaudioprocess = (e) => {
@@ -68,26 +105,19 @@ export async function startAudioCapture({ onChunk }) {
     }
     buffer.set(input, bufferOffset)
     bufferOffset += input.length
-
     while (bufferOffset >= inputSamplesPerChunk) {
       const slice = buffer.subarray(0, inputSamplesPerChunk)
       const int16 = resampleTo16kMono(slice, inRate)
       const rms = computeRms(slice)
-      const bytes = new Uint8Array(int16.buffer)
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-      const pcmBase64 = btoa(binary)
-      onChunk({ pcmBase64, rms, bytesLength: bytes.length })
-
+      const pcmBase64 = pcmBufferToBase64(int16)
+      onChunk({ pcmBase64, rms, bytesLength: int16.byteLength })
       const remain = bufferOffset - inputSamplesPerChunk
       buffer.copyWithin(0, inputSamplesPerChunk, bufferOffset)
       bufferOffset = remain
     }
   }
-
   source.connect(scriptNode)
   scriptNode.connect(audioContext.destination)
-
   return {
     stop() {
       scriptNode.disconnect()
@@ -99,4 +129,19 @@ export async function startAudioCapture({ onChunk }) {
     },
     stream,
   }
+}
+
+/**
+ * Start microphone capture. Returns { stop, stream }.
+ * Uses AudioWorklet when available, otherwise ScriptProcessor.
+ */
+export async function startAudioCapture({ onChunk }) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
+  const source = audioContext.createMediaStreamSource(stream)
+
+  const workletResult = await startWithWorklet(audioContext, source, stream, onChunk)
+  if (workletResult) return workletResult
+
+  return startWithScriptProcessor(audioContext, source, stream, onChunk)
 }

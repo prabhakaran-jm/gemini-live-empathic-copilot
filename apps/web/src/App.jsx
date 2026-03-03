@@ -6,6 +6,7 @@ import TensionVisualizer from './TensionVisualizer'
 import RmsLevelMeter from './RmsLevelMeter'
 import CoachingWhisperOverlay from './CoachingWhisperOverlay'
 import { useCoachingOverlay } from './useCoachingOverlay'
+import OnboardingModal, { getOnboardingSeen, setOnboardingSeen } from './OnboardingModal'
 import './App.css'
 
 const MAX_TRANSCRIPT_LEN = 2000
@@ -37,22 +38,95 @@ function LogEntryText({ text }) {
   return <span className="log-text">{parts}</span>
 }
 
+/**
+ * Speak whisper text via Web Speech API. No-op if TTS is missing or fails; coaching text still shows.
+ * Returns true if speak was attempted successfully, false if skipped or failed.
+ */
 function speakWhisper(text) {
-  if (!('speechSynthesis' in window)) return
-  window.speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(text)
-  utterance.rate = 0.85
-  utterance.pitch = 0.9
-  utterance.volume = 0.6
-  const voices = window.speechSynthesis.getVoices()
-  const preferred = voices.find(v =>
-    v.name.includes('Samantha') || v.name.includes('Google UK English Female')
-  )
-  if (preferred) utterance.voice = preferred
-  window.speechSynthesis.speak(utterance)
+  if (!text || typeof text !== 'string') return false
+  if (!('speechSynthesis' in window)) return false
+  try {
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.85
+    utterance.pitch = 0.9
+    utterance.volume = 0.6
+    const voices = window.speechSynthesis.getVoices()
+    const preferred = voices.find(v =>
+      v.name.includes('Samantha') || v.name.includes('Google UK English Female')
+    )
+    if (preferred) utterance.voice = preferred
+    window.speechSynthesis.speak(utterance)
+    return true
+  } catch (err) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('TTS unavailable or failed; whisper text still shown:', err?.message || err)
+    }
+    return false
+  }
+}
+
+let currentWhisperAudioCtx = null
+
+function playWhisperAudio(base64Pcm) {
+  try {
+    const raw = atob(base64Pcm)
+    const buf = new ArrayBuffer(raw.length)
+    const view = new Uint8Array(buf)
+    for (let i = 0; i < raw.length; i += 1) view[i] = raw.charCodeAt(i)
+
+    // Guard against odd-length buffers (must be divisible by 2 for Int16)
+    if (buf.byteLength % 2 !== 0) return false
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (!AudioCtx) return false
+    // Stop any previous whisper audio before starting a new one
+    if (currentWhisperAudioCtx) {
+      try {
+        currentWhisperAudioCtx.close()
+      } catch {
+        // ignore
+      }
+      currentWhisperAudioCtx = null
+    }
+    const ctx = new AudioCtx({ sampleRate: 24000 })
+    currentWhisperAudioCtx = ctx
+
+    const int16 = new Int16Array(buf)
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i += 1) {
+      float32[i] = int16[i] / 32768
+    }
+
+    const audioBuffer = ctx.createBuffer(1, float32.length, 24000)
+    audioBuffer.getChannelData(0).set(float32)
+
+    const source = ctx.createBufferSource()
+    const gain = ctx.createGain()
+    gain.gain.value = 0.6
+    source.buffer = audioBuffer
+    source.connect(gain).connect(ctx.destination)
+    source.onended = () => {
+      ctx.close()
+    }
+    source.start()
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('Live audio playback failed, falling back to Web Speech', err)
+    return false
+  }
+  return true
+}
+
+/** True when URL has ?debug=1 (show Advanced + Event log). */
+function isDebugUrl() {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('debug') === '1'
 }
 
 export default function App() {
+  const isDebugMode = isDebugUrl()
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => getOnboardingSeen())
   const [sessionActive, setSessionActive] = useState(false)
   const [tension, setTension] = useState(0)
   const [whisper, setWhisper] = useState(null)
@@ -90,7 +164,13 @@ export default function App() {
       addLog('in', { type: 'tension', score: msg.score })
     } else if (msg.type === 'whisper') {
       setWhisper({ text: msg.text, move: msg.move })
-      speakWhisper(msg.text)
+      // Prefer Gemini Live audio; fall back to Web Speech API
+      if (msg.audio_base64) {
+        const ok = playWhisperAudio(msg.audio_base64)
+        if (!ok) speakWhisper(msg.text)
+      } else {
+        speakWhisper(msg.text)
+      }
       addLog('in', { type: 'whisper', text: msg.text, move: msg.move })
     } else if (msg.type === 'stopped') {
       setSessionActive(false)
@@ -245,8 +325,16 @@ export default function App() {
     setWhisper(null)
   }
 
+  const handleOnboardingDismiss = useCallback(() => {
+    setOnboardingSeen()
+    setOnboardingDismissed(true)
+  }, [])
+
   return (
     <div className="app">
+      {!onboardingDismissed && (
+        <OnboardingModal onDismiss={handleOnboardingDismiss} />
+      )}
       {(showCoachingOverlay || overlayExiting) && (
         <CoachingWhisperOverlay
           visible={showCoachingOverlay}
@@ -348,51 +436,55 @@ export default function App() {
         )}
       </div>
 
-      {/* Advanced: RMS meter only (collapsible) */}
-      <section className="advanced">
-        <button
-          type="button"
-          className="advanced-toggle"
-          onClick={() => setShowAdvanced((a) => !a)}
-          aria-expanded={showAdvanced}
-          aria-controls="advanced-content"
-        >
-          <span>Advanced</span>
-          <span aria-hidden>{showAdvanced ? '−' : '+'}</span>
-        </button>
-        {showAdvanced && (
-          <div id="advanced-content" className="advanced-content">
-            <RmsLevelMeter rms={liveRms} sparklineData={rmsHistory} />
-            <p className="advanced-tip">
-              Tension and mic level depend on volume and distance. Speak clearly near the mic for consistent scores and transcription.
-            </p>
-          </div>
-        )}
-      </section>
+      {/* Advanced: RMS meter (collapsible) — only when ?debug=1 */}
+      {isDebugMode && (
+        <section className="advanced">
+          <button
+            type="button"
+            className="advanced-toggle"
+            onClick={() => setShowAdvanced((a) => !a)}
+            aria-expanded={showAdvanced}
+            aria-controls="advanced-content"
+          >
+            <span>Advanced</span>
+            <span aria-hidden>{showAdvanced ? '−' : '+'}</span>
+          </button>
+          {showAdvanced && (
+            <div id="advanced-content" className="advanced-content">
+              <RmsLevelMeter rms={liveRms} sparklineData={rmsHistory} />
+              <p className="advanced-tip">
+                Tension and mic level depend on volume and distance. Speak clearly near the mic for consistent scores and transcription.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
 
-      {/* Event log: ghost button anchored at bottom */}
-      <div className="logs-section">
-        <button
-          type="button"
-          className="logs-toggle"
-          onClick={() => setShowLogs((s) => !s)}
-          aria-expanded={showLogs}
-        >
-          {showLogs ? 'Hide' : 'Show'} event log ({logs.length})
-        </button>
-        {showLogs && (
-          <div className="logs-list" role="log" aria-label="Event log">
-            {logs.length === 0 && <div className="logs-empty">No events yet.</div>}
-            {logs.map((entry) => (
-              <div key={entry.id} className={`log-entry log-${entry.direction}`}>
-                <span className="log-ts">{entry.ts}</span>
-                <span className="log-dir">{entry.direction === 'in' ? '←' : '→'}</span>
-                <LogEntryText text={entry.text} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Event log — only when ?debug=1 */}
+      {isDebugMode && (
+        <div className="logs-section">
+          <button
+            type="button"
+            className="logs-toggle"
+            onClick={() => setShowLogs((s) => !s)}
+            aria-expanded={showLogs}
+          >
+            {showLogs ? 'Hide' : 'Show'} event log ({logs.length})
+          </button>
+          {showLogs && (
+            <div className="logs-list" role="log" aria-label="Event log">
+              {logs.length === 0 && <div className="logs-empty">No events yet.</div>}
+              {logs.map((entry) => (
+                <div key={entry.id} className={`log-entry log-${entry.direction}`}>
+                  <span className="log-ts">{entry.ts}</span>
+                  <span className="log-dir">{entry.direction === 'in' ? '←' : '→'}</span>
+                  <LogEntryText text={entry.text} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

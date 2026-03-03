@@ -10,7 +10,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +314,95 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         real_session = RealGeminiLiveSession(config, session, cm)
         asyncio.create_task(real_session._receive_loop())
         return real_session
+
+
+async def generate_whisper_audio(text: str) -> str | None:
+    """
+    Generate a short audio whisper for the given text using a short-lived Gemini Live session.
+
+    Returns base64-encoded PCM16 mono 24 kHz audio, or None on failure.
+    """
+    # Require either explicit API key or project for ADC; otherwise, skip Live audio.
+    if not (GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT):
+        return None
+
+    try:
+        from google.genai import types
+    except Exception as e:  # pragma: no cover - import guard
+        logger.warning("generate_whisper_audio: google-genai not available: %s", e)
+        return None
+
+    try:
+        client = _make_genai_client()
+    except Exception as e:
+        logger.warning("generate_whisper_audio: failed to build client: %s", e)
+        return None
+
+    model = GEMINI_MODEL
+
+    try:
+        tts_config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                )
+            ),
+            system_instruction=types.Content(
+                parts=[
+                    types.Part.from_text(
+                        "You are a soft-spoken coach. Read the user's text aloud exactly as written, "
+                        "in a calm whispered tone. Do not add any words."
+                    )
+                ]
+            ),
+        )
+    except Exception as e:
+        logger.warning("generate_whisper_audio: failed to build LiveConnectConfig: %s", e)
+        return None
+
+    audio_chunks: list[bytes] = []
+
+    cm = client.aio.live.connect(model=model, config=tts_config)
+    session = await cm.__aenter__()
+    try:
+        await session.send(input=text, end_of_turn=True)
+
+        async for msg in session.receive():
+            sc = getattr(msg, "server_content", None)
+            if sc is None:
+                continue
+            mt = getattr(sc, "model_turn", None)
+            if not mt:
+                continue
+            parts = getattr(mt, "parts", None)
+            if not parts:
+                continue
+            for part in parts:
+                inline = getattr(part, "inline_data", None)
+                if inline is not None:
+                    data = getattr(inline, "data", None)
+                    if isinstance(data, (bytes, bytearray)):
+                        audio_chunks.append(bytes(data))
+    except Exception as e:
+        logger.exception("generate_whisper_audio: error during TTS session: %s", e)
+        return None
+    finally:
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception:
+            # Best-effort close
+            pass
+
+    if not audio_chunks:
+        return None
+
+    raw = b"".join(audio_chunks)
+    try:
+        return base64.b64encode(raw).decode("ascii")
+    except Exception as e:
+        logger.warning("generate_whisper_audio: failed to base64-encode audio: %s", e)
+        return None
 
 
 # --- Stub implementation ---

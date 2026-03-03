@@ -17,6 +17,7 @@ from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
     LiveSessionConfig,
+    generate_whisper_audio,
     get_gemini_client,
 )
 from app.tension import AudioTelemetry, TensionState, compute_tension_loop
@@ -34,6 +35,11 @@ SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
+COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -172,10 +178,21 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     transcript_buffer=transcript_text,
                     image_base64=latest_frame_base64,
                 )
-                await send_json(
-                    websocket,
-                    {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
-                )
+                whisper_msg: dict[str, Any] = {
+                    "type": "whisper",
+                    "text": coaching_result["text"],
+                    "move": coaching_result["move"],
+                    "ts": int(now * 1000),
+                }
+                if COACHING_LIVE_AUDIO:
+                    try:
+                        audio_b64 = await generate_whisper_audio(coaching_result["text"])
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.exception("generate_whisper_audio failed: %s", exc)
+                        audio_b64 = None
+                    if audio_b64:
+                        whisper_msg["audio_base64"] = audio_b64
+                await send_json(websocket, whisper_msg)
 
     async def mock_loop() -> None:
         """When MOCK_MODE: periodically send tension + occasional whisper."""
@@ -206,7 +223,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 continue
             t = msg.get("type")
             if t == "start":
-                if session is not None:
+                if session is not None or tension_task is not None:
                     await send_json(websocket, {"type": "error", "message": "Already started"})
                     continue
                 # Optional: initial webcam frame for vision-aware coaching
