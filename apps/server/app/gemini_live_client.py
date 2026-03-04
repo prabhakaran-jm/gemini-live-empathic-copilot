@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
 import os
+import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -468,8 +470,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         live_config = None
         if is_native_audio:
             dict_config = {
-                # For Live transcription, docs require text to be included in response_modalities.
-                "response_modalities": ["audio", "text"],
+                "response_modalities": ["audio"],
                 "speech_config": {
                     "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
                 },
@@ -490,8 +491,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                 try:
                     from google.genai import types
                     kwargs = {
-                        # For Live transcription, include text alongside audio.
-                        "response_modalities": ["audio", "text"],
+                        "response_modalities": ["audio"],
                         "speech_config": types.SpeechConfig(
                             voice_config=types.VoiceConfig(
                                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
@@ -627,6 +627,66 @@ async def generate_whisper_audio(text: str) -> str | None:
         return base64.b64encode(raw).decode("ascii")
     except Exception as e:
         logger.warning("generate_whisper_audio: failed to base64-encode audio: %s", e)
+        return None
+
+
+def _pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> bytes:
+    """Wrap raw PCM16 mono bytes in a WAV container for transcription models."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # PCM16
+        wf.setframerate(sample_rate_hz)
+        wf.writeframes(pcm_bytes)
+    return buf.getvalue()
+
+
+async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> str | None:
+    """
+    Fallback transcription via non-Live Gemini model.
+    Returns transcript text or None when unavailable/empty.
+    """
+    if not pcm_bytes:
+        return None
+    if not (GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT):
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as e:
+        logger.debug("transcribe_pcm16_audio: google-genai import unavailable: %s", e)
+        return None
+
+    try:
+        client = _make_genai_client()
+        wav_bytes = _pcm16_to_wav_bytes(pcm_bytes, sample_rate_hz=sample_rate_hz)
+        prompt = (
+            "Transcribe this audio verbatim. Output only the spoken words. "
+            "If there is no intelligible speech, output an empty string."
+        )
+        response = await client.aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+                prompt,
+            ],
+            config=genai.types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=256,
+            ),
+        )
+        text = getattr(response, "text", None)
+        if not text or not isinstance(text, str):
+            return None
+        out = text.strip().strip('"').strip("'")
+        if not out:
+            return None
+        lower = out.lower()
+        if lower in {"", "no speech", "no intelligible speech", "[silence]", "(silence)"}:
+            return None
+        return out
+    except Exception as e:
+        logger.debug("transcribe_pcm16_audio failed: %s", e)
         return None
 
 

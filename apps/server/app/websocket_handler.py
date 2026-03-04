@@ -19,6 +19,7 @@ from app.gemini_live_client import (
     LiveSessionConfig,
     generate_whisper_audio,
     get_gemini_client,
+    transcribe_pcm16_audio,
 )
 from app.tension import AudioTelemetry, TensionState, compute_semantic_tension, compute_tension_loop
 
@@ -39,6 +40,19 @@ TELEMETRY_QUEUE_MAXSIZE = 32
 TRANSCRIPT_CONTEXT_MAX_CHARS = 4000
 ACTIVITY_START_RMS_THRESHOLD = float(os.environ.get("ACTIVITY_START_RMS_THRESHOLD", "0.01"))
 ACTIVITY_END_SILENCE_SEC = float(os.environ.get("ACTIVITY_END_SILENCE_SEC", "0.8"))
+TRANSCRIPT_FALLBACK_ENABLED = os.environ.get("TRANSCRIPT_FALLBACK_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+TRANSCRIPT_FALLBACK_WINDOW_SEC = float(os.environ.get("TRANSCRIPT_FALLBACK_WINDOW_SEC", "3.0"))
+TRANSCRIPT_FALLBACK_MIN_VOICE_RMS = float(os.environ.get("TRANSCRIPT_FALLBACK_MIN_VOICE_RMS", "0.02"))
+TRANSCRIPT_FALLBACK_MIN_BYTES = int(
+    os.environ.get("TRANSCRIPT_FALLBACK_MIN_BYTES", str(16000 * 2 * 2))
+)  # ~2s PCM16 mono 16k
+TRANSCRIPT_FALLBACK_MAX_BYTES = int(
+    os.environ.get("TRANSCRIPT_FALLBACK_MAX_BYTES", str(16000 * 2 * 12))
+)  # cap rolling buffer to ~12s
 COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower() in (
     "1",
     "true",
@@ -77,6 +91,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     events_task: asyncio.Task | None = None
     watch_task: asyncio.Task | None = None
     whisper_task: asyncio.Task | None = None
+    fallback_transcript_task: asyncio.Task | None = None
     agent_output_started: bool = False
     degraded_mode: bool = False  # True when Gemini connect failed; tension + whisper_loop still run
     running = True
@@ -90,6 +105,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
     latest_frame_base64: str | None = None  # optional webcam frame for vision-aware coaching
     user_activity_active: bool = False
     last_voice_ts: float | None = None
+    live_last_transcript_ts: float = 0.0
+    fallback_last_emitted: str = ""
+    fallback_audio_buffer = bytearray()
+    fallback_has_voice: bool = False
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -162,7 +181,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def consume_recv_events() -> None:
         """Real client: consume recv_events; track agent_output_started/stopped; emit transcript_delta (optional), error, and interrupted on barge-in."""
-        nonlocal session, agent_output_started, transcript_context
+        nonlocal session, agent_output_started, transcript_context, live_last_transcript_ts
         if session is None or not hasattr(session, "recv_events"):
             return
         try:
@@ -177,6 +196,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     delta_text = ev.text if isinstance(ev.text, str) else str(ev.text)
                     # Keep rolling context for semantic scoring + coaching generation.
                     transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                    live_last_transcript_ts = time.time()
                     await send_json(
                         websocket,
                         {
@@ -297,6 +317,57 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         whisper_msg["audio_base64"] = audio_b64
                 await send_json(websocket, whisper_msg)
 
+    async def fallback_transcript_loop() -> None:
+        """
+        Fallback transcript path:
+        if Live doesn't emit transcript events, periodically transcribe buffered PCM via gemini-2.0-flash.
+        """
+        nonlocal transcript_context, live_last_transcript_ts, fallback_last_emitted, fallback_has_voice
+        while running and (session is not None or degraded_mode):
+            await asyncio.sleep(TRANSCRIPT_FALLBACK_WINDOW_SEC)
+            if not running:
+                return
+            if not TRANSCRIPT_FALLBACK_ENABLED:
+                continue
+            # If Live transcript is active recently, fallback stays idle.
+            if live_last_transcript_ts and (time.time() - live_last_transcript_ts) < (
+                TRANSCRIPT_FALLBACK_WINDOW_SEC * 1.2
+            ):
+                fallback_audio_buffer.clear()
+                fallback_has_voice = False
+                continue
+            if len(fallback_audio_buffer) < TRANSCRIPT_FALLBACK_MIN_BYTES:
+                continue
+            if not fallback_has_voice:
+                # Avoid transcribing sustained silence.
+                fallback_audio_buffer.clear()
+                continue
+            pcm = bytes(fallback_audio_buffer)
+            fallback_audio_buffer.clear()
+            fallback_has_voice = False
+            text = await transcribe_pcm16_audio(pcm, sample_rate_hz=16000)
+            if not text:
+                continue
+            normalized = " ".join(text.split())
+            if not normalized:
+                continue
+            if normalized == fallback_last_emitted:
+                continue
+            fallback_last_emitted = normalized
+            delta_text = normalized + " "
+            transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+            live_last_transcript_ts = time.time()
+            logger.info("Fallback transcript emitted: %s", normalized[:120])
+            await send_json(
+                websocket,
+                {
+                    "type": "transcript",
+                    "delta": delta_text,
+                    "full": transcript_context,
+                    "ts": int(time.time() * 1000),
+                },
+            )
+
     async def mock_loop() -> None:
         """When MOCK_MODE: periodically send tension + occasional whisper."""
         import random
@@ -337,6 +408,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 await send_json(websocket, {"type": "ready"})
                 user_activity_active = False
                 last_voice_ts = None
+                live_last_transcript_ts = 0.0
+                fallback_last_emitted = ""
+                fallback_audio_buffer.clear()
+                fallback_has_voice = False
                 if not MOCK_MODE:
                     try:
                         client = get_gemini_client()
@@ -348,6 +423,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         if hasattr(session, "agent_turns"):
                             agent_task = asyncio.create_task(consume_agent_turns())
                         whisper_task = asyncio.create_task(whisper_loop())
+                        if TRANSCRIPT_FALLBACK_ENABLED:
+                            fallback_transcript_task = asyncio.create_task(fallback_transcript_loop())
                     except Exception as e:
                         logger.exception("Gemini connect failed; starting degraded (local-only) mode: %s", e)
                         await send_json(
@@ -357,6 +434,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         session = None
                         degraded_mode = True
                         whisper_task = asyncio.create_task(whisper_loop())
+                        if TRANSCRIPT_FALLBACK_ENABLED:
+                            fallback_transcript_task = asyncio.create_task(fallback_transcript_loop())
                 tension_task = asyncio.create_task(run_tension_loop())
                 if MOCK_MODE:
                     mock_task = asyncio.create_task(mock_loop())
@@ -401,6 +480,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         await whisper_task
                     except asyncio.CancelledError:
                         pass
+                if fallback_transcript_task:
+                    fallback_transcript_task.cancel()
+                    try:
+                        await fallback_transcript_task
+                    except asyncio.CancelledError:
+                        pass
                 if mock_task:
                     mock_task.cancel()
                     try:
@@ -436,6 +521,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 now_ts = time.time()
+                if TRANSCRIPT_FALLBACK_ENABLED:
+                    fallback_audio_buffer.extend(raw_bytes)
+                    if len(fallback_audio_buffer) > TRANSCRIPT_FALLBACK_MAX_BYTES:
+                        del fallback_audio_buffer[:-TRANSCRIPT_FALLBACK_MAX_BYTES]
+                    if rms_raw >= TRANSCRIPT_FALLBACK_MIN_VOICE_RMS:
+                        fallback_has_voice = True
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
                     is_silence=is_silence,
@@ -506,6 +597,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
             whisper_task.cancel()
             try:
                 await whisper_task
+            except asyncio.CancelledError:
+                pass
+        if fallback_transcript_task and not fallback_transcript_task.done():
+            fallback_transcript_task.cancel()
+            try:
+                await fallback_transcript_task
             except asyncio.CancelledError:
                 pass
         if mock_task and not mock_task.done():
