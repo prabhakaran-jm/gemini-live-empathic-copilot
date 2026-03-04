@@ -29,10 +29,10 @@ MOCK_MODE = os.environ.get("MOCK", "").lower() in ("1", "true", "yes")
 LIVE_STT_STREAMING = os.environ.get("LIVE_STT_STREAMING", "1").strip().lower() in ("1", "true", "yes")
 TRANSCRIPT_CONTEXT_MAX_CHARS = 2000
 BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
-RMS_EMA_ALPHA = 0.2  # rms_ema = (1-alpha)*prev + alpha*current
+RMS_EMA_ALPHA = 0.4  # rms_ema = (1-alpha)*prev + alpha*current — higher alpha = faster response
 SILENCE_RMS_THRESHOLD = 0.05
-WHISPER_COOLDOWN_SEC = 25.0
-TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "35"))
+WHISPER_COOLDOWN_SEC = 15.0
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "30"))
 SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
@@ -183,11 +183,17 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 await asyncio.sleep(2.0)  # back off before retry
 
     async def stt_result_reader_loop() -> None:
-        """Read streaming STT results and send transcript to UI; update transcript_context."""
+        """Read streaming STT results and send transcript to UI; update transcript_context.
+
+        Google Cloud STT sends cumulative interim results (e.g. "hey" → "hey I" → "hey I wanted").
+        We track how many characters we've already sent for the current utterance and only
+        send the NEW characters as a delta, preventing duplication.
+        """
         nonlocal transcript_context, stt_active, stt_audio_queue, stt_result_queue
         if stt_result_queue is None:
             return
         loop = asyncio.get_event_loop()
+        utterance_chars_sent = 0  # chars already sent for the current (non-final) utterance
 
         def get_result():
             try:
@@ -206,13 +212,30 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 t = transcript_text.strip()
                 if not t:
                     continue
-                transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-                transcript_buffer.append(t)
-                delta_text = t + (" " if is_final else "")
-                await send_json(
-                    websocket,
-                    {"type": "transcript", "delta": delta_text, "ts": int(time.time() * 1000)},
-                )
+
+                if is_final:
+                    # Final result: send remaining chars we haven't sent yet, then reset
+                    remaining = t[utterance_chars_sent:]
+                    if remaining:
+                        transcript_context = (transcript_context + " " + remaining).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                        transcript_buffer.append(remaining)
+                        await send_json(
+                            websocket,
+                            {"type": "transcript", "delta": remaining + " ", "ts": int(time.time() * 1000)},
+                        )
+                    utterance_chars_sent = 0
+                else:
+                    # Interim result: only send new chars beyond what we've already sent
+                    if len(t) > utterance_chars_sent:
+                        new_part = t[utterance_chars_sent:]
+                        transcript_context = (transcript_context + " " + new_part).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                        transcript_buffer.append(new_part)
+                        await send_json(
+                            websocket,
+                            {"type": "transcript", "delta": new_part, "ts": int(time.time() * 1000)},
+                        )
+                        utterance_chars_sent = len(t)
+                    # If len(t) <= utterance_chars_sent, STT revised earlier text — skip to avoid garbled output
         finally:
             logger.info("STT reader loop exited")
             stt_active = False

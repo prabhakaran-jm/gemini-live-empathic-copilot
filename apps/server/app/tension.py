@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+SPEECH_RMS_FLOOR = 0.01  # RMS below this is considered silence/noise, not speech
+
 # --- Telemetry (to be filled by audio pipeline) ---
 
 
@@ -30,7 +32,7 @@ class TensionState:
     silence_threshold_sec: float = 2.5
     overlap_count: int = 0
     recent_rms: list[float] = field(default_factory=list)
-    max_rms_history: int = 30
+    max_rms_history: int = 50  # ~2 seconds at 25 chunks/sec
 
 
 def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionState) -> int:
@@ -38,15 +40,17 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     Compute tension score 0–100 from current telemetry and state.
     Deterministic: same inputs -> same score.
     """
-    # Update state
+    # Update state — ALWAYS append RMS so avg_rms decays during silence
     if telemetry.is_silence:
         if state.silence_start is None:
             state.silence_start = telemetry.ts
     else:
         state.silence_start = None
-        state.recent_rms.append(telemetry.rms)
-        if len(state.recent_rms) > state.max_rms_history:
-            state.recent_rms.pop(0)
+    # Always track RMS (including silence) so the sliding window reflects actual audio levels.
+    # Without this, silence leaves old speech values in recent_rms and tension never decays.
+    state.recent_rms.append(telemetry.rms)
+    if len(state.recent_rms) > state.max_rms_history:
+        state.recent_rms.pop(0)
     if telemetry.is_overlap:
         state.overlap_count += 1
     state.last_rms = telemetry.rms
@@ -54,15 +58,16 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     # Score components (each 0..1 scale, then weighted)
     # 1) Volume: higher RMS -> higher tension (use recent average for stability)
     avg_rms = sum(state.recent_rms) / len(state.recent_rms) if state.recent_rms else 0.0
-    # Scale: RMS 0.02=calm(0.1), 0.05=normal(0.3), 0.10=raised(0.6), 0.20+=shouting(1.0)
-    rms_score = min(1.0, max(0.0, (avg_rms - 0.01) * 5.5))
+    # Scale tuned for real-world EMA'd RMS: calm(0.02)→0.2, normal(0.04)→0.4, raised(0.06)→0.6, loud(0.08+)→0.8
+    rms_score = min(1.0, max(0.0, avg_rms * 10.0))
 
     # 2) Long silence: tension increases after >2.5s silence (awkwardness)
     # But only contributes meaningfully if there was prior speech activity
     silence_sec = (telemetry.ts - state.silence_start) if state.silence_start else 0.0
     silence_score = min(1.0, silence_sec / state.silence_threshold_sec) if telemetry.is_silence else 0.0
     # Dampen silence score if no real speech has occurred (avoid false tension on startup)
-    if len(state.recent_rms) < 5:
+    speech_entries = sum(1 for r in state.recent_rms if r > SPEECH_RMS_FLOOR)
+    if speech_entries < 5:
         silence_score *= 0.2
 
     # 3) Overlap: more overlaps -> higher tension (turn-taking friction)
@@ -81,21 +86,24 @@ async def compute_tension_loop(
     interval_sec: float = 0.5,
 ) -> None:
     """
-    Loop: every interval_sec, take latest telemetry (or use last), compute tension, call on_tension(score).
+    Loop: every interval_sec, drain ALL queued telemetry to update state, then emit score.
+    Audio chunks arrive at ~25/sec but this loop runs at 2/sec; we must process ALL
+    queued items so that recent_rms history builds up properly.
     Stops when None is put in telemetry_queue.
     """
-    last_telemetry: AudioTelemetry | None = None
     try:
         while True:
-            try:
-                t = telemetry_queue.get_nowait()
-                if t is None:
-                    return
-                last_telemetry = t
-            except asyncio.QueueEmpty:
-                pass
-            if last_telemetry is not None:
-                score = compute_tension_from_telemetry(last_telemetry, state)
+            # Drain ALL queued telemetry — each item updates state (recent_rms, silence, overlap)
+            score = None
+            while True:
+                try:
+                    t = telemetry_queue.get_nowait()
+                    if t is None:
+                        return
+                    score = compute_tension_from_telemetry(t, state)
+                except asyncio.QueueEmpty:
+                    break
+            if score is not None:
                 on_tension(score)
             await asyncio.sleep(interval_sec)
     except asyncio.CancelledError:
