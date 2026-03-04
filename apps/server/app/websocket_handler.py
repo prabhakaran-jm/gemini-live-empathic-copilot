@@ -58,6 +58,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     prev_tension_score: int = 0
     tension_history: list[tuple[float, int]] = []
     last_whisper_ts: float = 0.0
+    last_whisper_text: str = ""
     interrupted_events: list[float] = []
     transcript_buffer: list[str] = []
     tension_crossed_up: bool = False  # Flag: tension just crossed upward past threshold
@@ -106,38 +107,65 @@ async def handle_websocket(websocket: WebSocket) -> None:
         except Exception as e:
             logger.exception("Agent turn consumer error: %s", e)
 
-    async def consume_recv_events() -> None:
-        """Real client: consume recv_events; track agent_output_started/stopped; emit transcript_delta (optional), error, and interrupted on barge-in."""
-        nonlocal session, agent_output_started
+    async def _consume_one_session() -> None:
+        """Drain recv_events from the current session until it ends."""
+        nonlocal agent_output_started
         if session is None or not hasattr(session, "recv_events"):
             return
-        try:
-            async for ev in session.recv_events():
-                if not running:
-                    return
-                if ev.kind == "agent_output_started":
-                    agent_output_started = True
-                elif ev.kind == "agent_output_stopped":
-                    agent_output_started = False
-                elif ev.kind == "user_transcript_delta" and ev.text:
-                    transcript_buffer.append(ev.text)
-                    await send_json(
-                        websocket,
-                        {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
-                    )
-                elif ev.kind == "transcript_delta" and ev.text:
-                    # Model backchannel speech ("Okay", "Mmhm") — log but don't show in transcript
-                    logger.debug("Agent backchannel: %s", ev.text[:80])
-                elif ev.kind == "error":
-                    await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.exception("recv_events error: %s", e)
+        async for ev in session.recv_events():
+            if not running:
+                return
+            if ev.kind == "agent_output_started":
+                agent_output_started = True
+            elif ev.kind == "agent_output_stopped":
+                agent_output_started = False
+            elif ev.kind == "user_transcript_delta" and ev.text:
+                transcript_buffer.append(ev.text)
+                await send_json(
+                    websocket,
+                    {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
+                )
+            elif ev.kind == "transcript_delta" and ev.text:
+                # Model backchannel speech ("Okay", "Mmhm") — log but don't show in transcript
+                logger.debug("Agent backchannel: %s", ev.text[:80])
+            elif ev.kind == "error":
+                await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
+
+    async def consume_recv_events() -> None:
+        """Consume recv_events with auto-reconnect. When Gemini Live session ends, reconnect and continue."""
+        nonlocal session, agent_output_started
+        reconnect_count = 0
+        max_reconnects = 20
+        while running and reconnect_count <= max_reconnects:
+            try:
+                await _consume_one_session()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.exception("recv_events error: %s", e)
+            if not running:
+                return
+            # Session ended — reconnect
+            reconnect_count += 1
+            logger.info("Gemini Live session ended, reconnecting (%d/%d)...", reconnect_count, max_reconnects)
+            agent_output_started = False
+            try:
+                old = session
+                if old:
+                    try:
+                        await old.close()
+                    except Exception:
+                        pass
+                client = get_gemini_client()
+                session = await client.connect(LiveSessionConfig())
+                logger.info("Gemini Live reconnected successfully")
+            except Exception as e:
+                logger.warning("Gemini Live reconnect failed: %s", e)
+                await asyncio.sleep(2.0)  # back off before retry
 
     async def whisper_loop() -> None:
         """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
-        nonlocal last_whisper_ts, prev_tension_score, last_tension_score, tension_crossed_up
+        nonlocal last_whisper_ts, last_whisper_text, prev_tension_score, last_tension_score, tension_crossed_up
         while running and (session is not None or degraded_mode):
             await asyncio.sleep(0.25)
             now = time.time()
@@ -172,7 +200,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         trigger=trigger,
                         tension_score=last_tension_score,
                         transcript_buffer=transcript_text,
+                        last_whisper=last_whisper_text,
                     )
+                    last_whisper_text = coaching_result["text"]
                     logger.info("Whisper sending: move=%s, text=%s", coaching_result["move"], coaching_result["text"][:80])
                     await send_json(
                         websocket,
