@@ -32,6 +32,8 @@ GEMINI_LIVE_FALLBACK_REGIONS = [
     for s in os.environ.get("GEMINI_LIVE_FALLBACK_REGIONS", "europe-west1,us-central1").split(",")
     if s.strip()
 ]
+TRANSCRIPT_FALLBACK_MODEL = os.environ.get("TRANSCRIPT_FALLBACK_MODEL", "gemini-2.0-flash")
+_TRANSCRIBE_ATTEMPT_COUNT = 0
 
 
 # --- Events yielded by recv_events() ---
@@ -163,7 +165,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             if not self._activity_started:
                 await self.start_activity()
             await self._session.send_realtime_input(
-                audio=types.Blob(data=raw, mime_type="audio/pcm;rate=16000")
+                audio=types.Blob(data=raw, mime_type="audio/pcm")
             )
             self._sent_audio_chunks += 1
         except Exception as e:
@@ -477,7 +479,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         live_config = None
         if is_native_audio:
             dict_config = {
-                "response_modalities": ["audio"],
+                "response_modalities": ["AUDIO"],
                 "speech_config": {
                     "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
                 },
@@ -498,7 +500,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                 try:
                     from google.genai import types
                     kwargs = {
-                        "response_modalities": ["audio"],
+                        "response_modalities": ["AUDIO"],
                         "speech_config": types.SpeechConfig(
                             voice_config=types.VoiceConfig(
                                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
@@ -535,7 +537,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
             # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
             # Do NOT include speech_config with TEXT — they are incompatible.
             live_config = {
-                "response_modalities": ["text"],
+                "response_modalities": ["TEXT"],
             }
 
         if GOOGLE_API_KEY:
@@ -708,6 +710,96 @@ def _pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> bytes:
     return buf.getvalue()
 
 
+def _normalize_pcm16_bytes(
+    pcm_bytes: bytes,
+    target_rms: float = 0.12,
+    max_gain: float = 12.0,
+) -> bytes:
+    """
+    Normalize low-level PCM16 mono audio to improve transcription robustness.
+    Returns original bytes if input is silent/invalid.
+    """
+    if not pcm_bytes or len(pcm_bytes) % 2 != 0:
+        return pcm_bytes
+    import array
+
+    samples = array.array("h")
+    samples.frombytes(pcm_bytes)
+    if not samples:
+        return pcm_bytes
+
+    # Compute RMS in normalized float domain [-1, 1].
+    sq_sum = 0.0
+    for s in samples:
+        v = s / 32768.0
+        sq_sum += v * v
+    rms = (sq_sum / len(samples)) ** 0.5
+    if rms <= 1e-6:
+        return pcm_bytes
+
+    gain = min(max_gain, target_rms / rms)
+    if gain <= 1.05:
+        return pcm_bytes
+
+    for i, s in enumerate(samples):
+        v = int(round(s * gain))
+        if v > 32767:
+            v = 32767
+        elif v < -32768:
+            v = -32768
+        samples[i] = v
+    return samples.tobytes()
+
+
+def _extract_response_text(response: object) -> str:
+    """
+    Extract text from generate_content responses across SDK variants.
+    """
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, (list, tuple)):
+        return ""
+    parts_out: list[str] = []
+    for cand in candidates:
+        content = getattr(cand, "content", None)
+        parts = getattr(content, "parts", None) if content is not None else None
+        if not isinstance(parts, (list, tuple)):
+            continue
+        for part in parts:
+            ptxt = getattr(part, "text", None)
+            if isinstance(ptxt, str) and ptxt.strip():
+                parts_out.append(ptxt.strip())
+    return " ".join(parts_out).strip()
+
+
+def _sanitize_transcript_text(text: str) -> str | None:
+    out = text.strip().strip('"').strip("'")
+    if not out:
+        return None
+    lower = out.lower()
+    if lower in {"", "no speech", "no intelligible speech", "[silence]", "(silence)"}:
+        return None
+    # Filter non-content artifacts from generic models (punctuation-only, boilerplate).
+    if not any(ch.isalnum() for ch in out):
+        return None
+    if len(re.findall(r"[A-Za-z0-9]", out)) < 2:
+        return None
+    if lower.startswith(
+        (
+            "no intelligible",
+            "no speech",
+            "i can't",
+            "i cannot",
+            "i'm unable",
+            "unable to transcribe",
+        )
+    ):
+        return None
+    return out
+
+
 async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> str | None:
     """
     Fallback transcription via non-Live Gemini model.
@@ -725,40 +817,46 @@ async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) 
         return None
 
     try:
+        global _TRANSCRIBE_ATTEMPT_COUNT
+        _TRANSCRIBE_ATTEMPT_COUNT += 1
+        should_log = _TRANSCRIBE_ATTEMPT_COUNT <= 3 or (_TRANSCRIBE_ATTEMPT_COUNT % 20 == 0)
+
         client = _make_genai_client()
-        wav_bytes = _pcm16_to_wav_bytes(pcm_bytes, sample_rate_hz=sample_rate_hz)
+        pcm_norm = _normalize_pcm16_bytes(pcm_bytes)
+        wav_bytes = _pcm16_to_wav_bytes(pcm_norm, sample_rate_hz=sample_rate_hz)
         prompt = (
-            "Transcribe this audio verbatim. Output only the spoken words. "
-            "If there is no intelligible speech, output an empty string."
+            "Transcribe the spoken words from this audio. "
+            "Return only the transcript text, without labels, punctuation-only output, or commentary. "
+            "If no speech is present, return an empty string."
         )
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                    types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+                ],
+            )
+        ]
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-                prompt,
-            ],
+            model=TRANSCRIPT_FALLBACK_MODEL,
+            contents=contents,
             config=genai.types.GenerateContentConfig(
                 temperature=0.0,
                 max_output_tokens=256,
             ),
         )
-        text = getattr(response, "text", None)
-        if not text or not isinstance(text, str):
-            return None
-        out = text.strip().strip('"').strip("'")
-        if not out:
-            return None
-        lower = out.lower()
-        if lower in {"", "no speech", "no intelligible speech", "[silence]", "(silence)"}:
-            return None
-        # Filter non-content artifacts from generic models (punctuation-only, disclaimers).
-        if not any(ch.isalnum() for ch in out):
-            return None
-        if len(re.findall(r"[A-Za-z0-9]", out)) < 2:
-            return None
-        if lower.startswith(("no intelligible", "no speech", "i can't", "i cannot")):
-            return None
-        return out
+        text = _extract_response_text(response)
+        out = _sanitize_transcript_text(text) if text else None
+        if out:
+            return out
+        if should_log:
+            logger.info(
+                "Fallback transcription returned no usable text (model=%s, bytes=%s)",
+                TRANSCRIPT_FALLBACK_MODEL,
+                len(pcm_bytes),
+            )
+        return None
     except Exception as e:
         logger.debug("transcribe_pcm16_audio failed: %s", e)
         return None

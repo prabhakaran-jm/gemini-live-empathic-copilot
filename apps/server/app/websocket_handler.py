@@ -40,6 +40,10 @@ TELEMETRY_QUEUE_MAXSIZE = 32
 TRANSCRIPT_CONTEXT_MAX_CHARS = 4000
 ACTIVITY_START_RMS_THRESHOLD = float(os.environ.get("ACTIVITY_START_RMS_THRESHOLD", "0.01"))
 ACTIVITY_END_SILENCE_SEC = float(os.environ.get("ACTIVITY_END_SILENCE_SEC", "0.8"))
+LIVE_IDLE_DROP_RMS_THRESHOLD = float(os.environ.get("LIVE_IDLE_DROP_RMS_THRESHOLD", "0.012"))
+LIVE_AUDIO_STREAM_END_COOLDOWN_SEC = float(
+    os.environ.get("LIVE_AUDIO_STREAM_END_COOLDOWN_SEC", "0.35")
+)
 TRANSCRIPT_FALLBACK_ENABLED = os.environ.get("TRANSCRIPT_FALLBACK_ENABLED", "1").strip().lower() in (
     "1",
     "true",
@@ -50,9 +54,11 @@ TRANSCRIPT_FALLBACK_END_SILENCE_SEC = float(
     os.environ.get("TRANSCRIPT_FALLBACK_END_SILENCE_SEC", "1.2")
 )
 TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC = float(
-    os.environ.get("TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC", "6.0")
+    os.environ.get("TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC", "10.0")
 )
-TRANSCRIPT_FALLBACK_MIN_VOICE_RMS = float(os.environ.get("TRANSCRIPT_FALLBACK_MIN_VOICE_RMS", "0.02"))
+TRANSCRIPT_FALLBACK_MIN_VOICE_RMS = float(
+    os.environ.get("TRANSCRIPT_FALLBACK_MIN_VOICE_RMS", "0.015")
+)
 TRANSCRIPT_FALLBACK_MIN_BYTES = int(
     os.environ.get("TRANSCRIPT_FALLBACK_MIN_BYTES", str(16000 * 2 * 2))
 )  # ~2s PCM16 mono 16k
@@ -117,6 +123,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     fallback_has_voice: bool = False
     fallback_last_request_ts: float = 0.0
     live_audio_unavailable: bool = False
+    last_audio_stream_end_ts: float = 0.0
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -235,7 +242,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def watch_events_and_reconnect() -> None:
         """When consume_recv_events exits (Live stream died), try to reconnect and restart the recv loop."""
-        nonlocal session, events_task, degraded_mode, user_activity_active, last_voice_ts
+        nonlocal session, events_task, degraded_mode, user_activity_active, last_voice_ts, last_audio_stream_end_ts
         try:
             while running and session is not None and events_task is not None:
                 try:
@@ -250,6 +257,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 session = None
                 user_activity_active = False
                 last_voice_ts = None
+                last_audio_stream_end_ts = 0.0
                 try:
                     await old_session.close()
                 except Exception:
@@ -332,6 +340,33 @@ async def handle_websocket(websocket: WebSocket) -> None:
         if Live doesn't emit transcript events, periodically transcribe buffered PCM via gemini-2.0-flash.
         """
         nonlocal transcript_context, live_last_transcript_ts, fallback_last_emitted, fallback_has_voice, fallback_last_request_ts
+
+        async def emit_fallback_transcript(pcm: bytes) -> bool:
+            nonlocal transcript_context, live_last_transcript_ts, fallback_last_emitted
+            text = await transcribe_pcm16_audio(pcm, sample_rate_hz=16000)
+            if not text:
+                return False
+            normalized = " ".join(text.split())
+            if not normalized:
+                return False
+            if normalized == fallback_last_emitted:
+                return False
+            fallback_last_emitted = normalized
+            delta_text = normalized + " "
+            transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+            live_last_transcript_ts = time.time()
+            logger.info("Fallback transcript emitted: %s", normalized[:120])
+            await send_json(
+                websocket,
+                {
+                    "type": "transcript",
+                    "delta": delta_text,
+                    "full": transcript_context,
+                    "ts": int(time.time() * 1000),
+                },
+            )
+            return True
+
         while running and (session is not None or degraded_mode):
             await asyncio.sleep(TRANSCRIPT_FALLBACK_POLL_SEC)
             if not running:
@@ -362,28 +397,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
             pcm = bytes(fallback_audio_buffer)
             fallback_audio_buffer.clear()
             fallback_has_voice = False
-            text = await transcribe_pcm16_audio(pcm, sample_rate_hz=16000)
-            if not text:
-                continue
-            normalized = " ".join(text.split())
-            if not normalized:
-                continue
-            if normalized == fallback_last_emitted:
-                continue
-            fallback_last_emitted = normalized
-            delta_text = normalized + " "
-            transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-            live_last_transcript_ts = time.time()
-            logger.info("Fallback transcript emitted: %s", normalized[:120])
-            await send_json(
-                websocket,
-                {
-                    "type": "transcript",
-                    "delta": delta_text,
-                    "full": transcript_context,
-                    "ts": int(time.time() * 1000),
-                },
-            )
+            await emit_fallback_transcript(pcm)
 
     async def mock_loop() -> None:
         """When MOCK_MODE: periodically send tension + occasional whisper."""
@@ -431,6 +445,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 fallback_audio_buffer.clear()
                 fallback_has_voice = False
                 live_audio_unavailable = False
+                last_audio_stream_end_ts = 0.0
                 if not MOCK_MODE:
                     try:
                         client = get_gemini_client()
@@ -459,6 +474,32 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 if MOCK_MODE:
                     mock_task = asyncio.create_task(mock_loop())
             elif t == "stop":
+                # Flush any pending fallback speech buffer before shutdown.
+                if (
+                    TRANSCRIPT_FALLBACK_ENABLED
+                    and fallback_has_voice
+                    and len(fallback_audio_buffer) >= TRANSCRIPT_FALLBACK_MIN_BYTES
+                ):
+                    pcm = bytes(fallback_audio_buffer)
+                    fallback_audio_buffer.clear()
+                    fallback_has_voice = False
+                    text = await transcribe_pcm16_audio(pcm, sample_rate_hz=16000)
+                    if text:
+                        normalized = " ".join(text.split())
+                        if normalized and normalized != fallback_last_emitted:
+                            fallback_last_emitted = normalized
+                            delta_text = normalized + " "
+                            transcript_context = (transcript_context + delta_text)[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                            live_last_transcript_ts = time.time()
+                            await send_json(
+                                websocket,
+                                {
+                                    "type": "transcript",
+                                    "delta": delta_text,
+                                    "full": transcript_context,
+                                    "ts": int(time.time() * 1000),
+                                },
+                            )
                 running = False
                 if tension_task:
                     signal_tension_stop()
@@ -541,11 +582,16 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 now_ts = time.time()
                 if TRANSCRIPT_FALLBACK_ENABLED:
-                    fallback_audio_buffer.extend(raw_bytes)
-                    if len(fallback_audio_buffer) > TRANSCRIPT_FALLBACK_MAX_BYTES:
-                        del fallback_audio_buffer[:-TRANSCRIPT_FALLBACK_MAX_BYTES]
                     if rms_raw >= TRANSCRIPT_FALLBACK_MIN_VOICE_RMS:
                         fallback_has_voice = True
+                    # Keep fallback buffer focused on likely speech segments to improve ASR quality.
+                    keep_for_fallback = fallback_has_voice or (
+                        rms_raw >= (TRANSCRIPT_FALLBACK_MIN_VOICE_RMS * 0.6)
+                    )
+                    if keep_for_fallback:
+                        fallback_audio_buffer.extend(raw_bytes)
+                        if len(fallback_audio_buffer) > TRANSCRIPT_FALLBACK_MAX_BYTES:
+                            del fallback_audio_buffer[:-TRANSCRIPT_FALLBACK_MAX_BYTES]
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
                     is_silence=is_silence,
@@ -555,6 +601,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 )
                 enqueue_latest_telemetry(telemetry)
                 if session and not MOCK_MODE:
+                    should_send_live_audio = True
                     if rms_ema >= ACTIVITY_START_RMS_THRESHOLD:
                         last_voice_ts = now_ts
                         if not user_activity_active and hasattr(session, "start_activity"):
@@ -568,6 +615,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     ):
                         await session.end_activity()
                         user_activity_active = False
+                        if (
+                            hasattr(session, "end_audio_stream")
+                            and now_ts - last_audio_stream_end_ts >= LIVE_AUDIO_STREAM_END_COOLDOWN_SEC
+                        ):
+                            await session.end_audio_stream()
+                            last_audio_stream_end_ts = now_ts
+                    if not user_activity_active and rms_raw < LIVE_IDLE_DROP_RMS_THRESHOLD:
+                        should_send_live_audio = False
                     if barge_in_trigger:
                         if hasattr(session, "stop_generation"):
                             await session.stop_generation()
@@ -579,7 +634,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                             {"type": "event", "name": "interrupted", "ts": int(now_ts * 1000)},
                         )
                         agent_output_started = False
-                    await session.send_audio(base64_audio)
+                    if should_send_live_audio:
+                        await session.send_audio(base64_audio)
             else:
                 await send_json(websocket, {"type": "error", "message": f"Unknown type: {t}"})
 
