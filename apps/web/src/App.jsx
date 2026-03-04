@@ -50,7 +50,7 @@ function speakWhisper(text) {
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.rate = 0.85
     utterance.pitch = 0.9
-    utterance.volume = 0.6
+    utterance.volume = 0.35
     const voices = window.speechSynthesis.getVoices()
     const preferred = voices.find(v =>
       v.name.includes('Samantha') || v.name.includes('Google UK English Female')
