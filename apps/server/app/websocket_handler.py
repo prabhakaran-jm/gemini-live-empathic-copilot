@@ -31,8 +31,8 @@ TRANSCRIPT_CONTEXT_MAX_CHARS = 2000
 BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
 RMS_EMA_ALPHA = 0.4  # rms_ema = (1-alpha)*prev + alpha*current — higher alpha = faster response
 SILENCE_RMS_THRESHOLD = 0.05
-WHISPER_COOLDOWN_SEC = 15.0
-TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "30"))
+WHISPER_COOLDOWN_SEC = 20.0
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "40"))
 SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
@@ -83,6 +83,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
         # Detect upward crossing of whisper threshold
         if prev_tension_score < TENSION_WHISPER_THRESHOLD <= score:
             tension_crossed_up = True
+        # Clear flag if tension dropped back below threshold (prevents stale triggers)
+        if score < TENSION_WHISPER_THRESHOLD:
+            tension_crossed_up = False
         now = time.time()
         tension_history.append((now, score))
         while tension_history and now - tension_history[0][0] > TENSION_HIGH_WINDOW_SEC:
@@ -254,19 +257,22 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 continue
             trigger = None
             # (a) Tension crossed upward into >= threshold (consume flag set by on_tension)
-            if tension_crossed_up:
+            # Guard: only fire if current tension is STILL elevated (flag may be stale from a brief spike)
+            if tension_crossed_up and last_tension_score >= TENSION_WHISPER_THRESHOLD:
                 tension_crossed_up = False
                 trigger = "tension_cross"
+            elif tension_crossed_up:
+                tension_crossed_up = False  # discard stale flag
             # (b) Overlap heuristic: high interruption rate in last 5s
             if trigger is None:
                 recent = [t for t in interrupted_events if now - t <= OVERLAP_WINDOW_SEC]
                 if len(recent) >= OVERLAP_MIN_COUNT:
                     trigger = "barge_in"
-            # (c) Silence >2.5s and tension was >=70 in last 10s
+            # (c) Silence >2.5s and tension was >=50 in last 10s (post-escalation silence)
             if trigger is None and tension_state.silence_start is not None:
                 silence_sec = now - tension_state.silence_start
                 if silence_sec >= SILENCE_THRESHOLD_SEC:
-                    high_in_window = any(s >= 70 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
+                    high_in_window = any(s >= 50 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
                     if high_in_window:
                         trigger = "post_escalation_silence"
             if trigger is not None:
