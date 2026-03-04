@@ -13,7 +13,7 @@ The **backend** is hosted on **Google Cloud Run** and uses **Gemini Live via Ver
 
 **(a) Health check** — In a browser or terminal:
 ```bash
-curl https://YOUR_CLOUD_RUN_URL/health
+curl https://empathic-copilot-750378193246.europe-west1.run.app/health
 ```
 Expect `{"status":"ok"}`.
 
@@ -21,7 +21,7 @@ Expect `{"status":"ok"}`.
 - Mac/Linux: `cd apps/web && npm install && npm run dev`
 - Windows (PowerShell): `cd apps\web; npm install; npm run dev`
 
-To use the deployed backend, set the WebSocket URL before starting (Mac/Linux: `export VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` then `npm run dev`; Windows: `$env:VITE_WS_URL="wss://YOUR_CLOUD_RUN_URL/ws"; npm run dev`).
+To use the deployed backend, set the WebSocket URL before starting (Mac/Linux: `export VITE_WS_URL=wss://empathic-copilot-750378193246.europe-west1.run.app/ws` then `npm run dev`; Windows: `$env:VITE_WS_URL="wss://empathic-copilot-750378193246.europe-west1.run.app/ws"; npm run dev`).
 
 **(c) What to do** — Open the app (e.g. http://localhost:5173), click **Start session**, allow mic. **Look for:** live **Transcript**, **Tension** bar, and **Whisper** coaching lines. Add `?debug=1` to the URL to show the **Advanced** section (RMS) and **Event log**. Click **Stop session** when done.
 

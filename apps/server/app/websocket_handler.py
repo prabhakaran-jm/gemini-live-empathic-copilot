@@ -126,6 +126,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
     stt_result_queue: Any = None
     stt_reader_task: asyncio.Task | None = None
     stt_active: bool = False
+    stt_permanently_failed: bool = False  # True after MAX consecutive failures; stops restart loop
+    stt_consecutive_failures: int = 0
+    STT_MAX_CONSECUTIVE_FAILURES: int = 3
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -402,9 +405,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
     async def stt_result_reader_loop() -> None:
         """Read streaming STT results and send transcript messages; update transcript_context."""
         nonlocal transcript_context, live_last_transcript_ts, stt_active, stt_audio_queue, stt_result_queue
+        nonlocal stt_consecutive_failures, stt_permanently_failed
         if stt_result_queue is None:
             return
         loop = asyncio.get_event_loop()
+        _got_any_transcript = False
+        _start_ts = time.time()
 
         def get_result() -> tuple[str | None, bool] | None:
             try:
@@ -420,6 +426,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 transcript, is_final = item
                 if transcript is None:
                     break
+                _got_any_transcript = True
                 t = transcript.strip()
                 if not t:
                     continue
@@ -436,7 +443,22 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     },
                 )
         finally:
-            logger.info("Streaming STT reader loop exited; falling back to batch if enabled")
+            elapsed = time.time() - _start_ts
+            if _got_any_transcript:
+                stt_consecutive_failures = 0
+            elif elapsed < 5.0:
+                # Exited quickly with no transcripts — likely a crash / API error.
+                stt_consecutive_failures += 1
+                if stt_consecutive_failures >= STT_MAX_CONSECUTIVE_FAILURES:
+                    stt_permanently_failed = True
+                    logger.warning(
+                        "Streaming STT failed %d times in a row; disabling. Falling back to batch.",
+                        stt_consecutive_failures,
+                    )
+            logger.info(
+                "Streaming STT reader loop exited (got_transcript=%s, elapsed=%.1fs, failures=%d); falling back to batch if enabled",
+                _got_any_transcript, elapsed, stt_consecutive_failures,
+            )
             stt_active = False
             stt_audio_queue = None
             stt_result_queue = None
@@ -631,7 +653,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 now_ts = time.time()
                 # Start streaming STT on first audio chunk so the stream gets data immediately (avoids 400 Audio Timeout).
-                if LIVE_STT_STREAMING and stt_audio_queue is None and not stt_active:
+                if LIVE_STT_STREAMING and stt_audio_queue is None and not stt_active and not stt_permanently_failed:
                     stt_ctx = start_streaming_stt_thread(sample_rate_hz=16000, language_code="en-US")
                     if stt_ctx is not None:
                         stt_active = True

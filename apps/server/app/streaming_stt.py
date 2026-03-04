@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -37,18 +38,33 @@ def _ensure_speech_client() -> bool:
         return False
 
 
-def _audio_request_generator(
-    audio_queue: queue.Queue[bytes | None], streaming_config: Any
+def _audio_only_generator(
+    audio_queue: queue.Queue[bytes | None],
+    chunk_counter: list[int],
 ) -> Any:
-    """Yield StreamingRecognizeRequest starting with config, then audio chunks from queue."""
-    # The first message must contain the configuration.
-    yield _StreamingRecognizeRequest(streaming_config=streaming_config)
-
+    """Yield StreamingRecognizeRequest with audio_content only (no config). For v2 API."""
     while True:
         chunk = audio_queue.get()
         if chunk is None:
             return
         if chunk:
+            chunk_counter[0] += 1
+            yield _StreamingRecognizeRequest(audio_content=chunk)
+
+
+def _audio_request_generator_legacy(
+    audio_queue: queue.Queue[bytes | None],
+    streaming_config: Any,
+    chunk_counter: list[int],
+) -> Any:
+    """Yield StreamingRecognizeRequest starting with config, then audio chunks. For v1 API."""
+    yield _StreamingRecognizeRequest(streaming_config=streaming_config)
+    while True:
+        chunk = audio_queue.get()
+        if chunk is None:
+            return
+        if chunk:
+            chunk_counter[0] += 1
             yield _StreamingRecognizeRequest(audio_content=chunk)
 
 
@@ -66,6 +82,11 @@ def run_streaming_stt(
     if not _ensure_speech_client():
         result_queue.put((None, False))
         return
+
+    chunk_counter = [0]
+    response_counter = 0
+    start_ts = time.time()
+
     try:
         client = _SpeechClient()
         config = _RecognitionConfig(
@@ -75,11 +96,32 @@ def run_streaming_stt(
         )
         streaming_config = _StreamingRecognitionConfig(config=config, interim_results=True)
 
-        # streaming_recognize takes an iterable of requests.
-        requests = _audio_request_generator(audio_queue, streaming_config)
-        responses = client.streaming_recognize(requests=requests)
+        # SpeechHelpers.streaming_recognize expects (config, requests).
+        # The requests iterable should yield StreamingRecognizeRequest(audio_content=...) only.
+        requests = _audio_only_generator(audio_queue, chunk_counter)
+        try:
+            responses = client.streaming_recognize(config=streaming_config, requests=requests)
+        except TypeError as e:
+            # Legacy API: config inside the first request.
+            logger.info("Streaming STT falling back to legacy API: %s", e)
+            requests = _audio_request_generator_legacy(audio_queue, streaming_config, chunk_counter)
+            responses = client.streaming_recognize(requests=requests)
+
+        logger.info(
+            "Streaming STT stream established (elapsed=%.1fs, chunks_queued=%d)",
+            time.time() - start_ts,
+            chunk_counter[0],
+        )
 
         for response in responses:
+            response_counter += 1
+            if response_counter <= 3 or response_counter % 20 == 0:
+                logger.info(
+                    "STT response #%d: results=%d, chunks_sent=%d",
+                    response_counter,
+                    len(response.results) if response.results else 0,
+                    chunk_counter[0],
+                )
             if not response.results:
                 continue
             result = response.results[0]
@@ -87,10 +129,27 @@ def run_streaming_stt(
                 continue
             transcript = result.alternatives[0].transcript.strip()
             if transcript:
+                logger.info(
+                    "STT transcript (is_final=%s): %s",
+                    result.is_final,
+                    transcript[:120],
+                )
                 result_queue.put((transcript, result.is_final))
     except Exception as e:
-        logger.warning("Streaming STT error: %s", e)
+        logger.warning(
+            "Streaming STT error after %.1fs, %d chunks sent, %d responses: %s",
+            time.time() - start_ts,
+            chunk_counter[0],
+            response_counter,
+            e,
+        )
     finally:
+        logger.info(
+            "Streaming STT thread exiting: %.1fs elapsed, %d chunks sent, %d responses received",
+            time.time() - start_ts,
+            chunk_counter[0],
+            response_counter,
+        )
         result_queue.put((None, False))
 
 
