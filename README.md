@@ -1,9 +1,11 @@
 # Empathic Co-Pilot
 
-Empathic Co-Pilot is a real-time multimodal Live Agent built with **Gemini Live API on Google Cloud**. It augments difficult human conversations by providing subtle, interruptible whisper coaching based on conversational signals such as tone shifts, pauses, and turn-taking dynamics.  
+Empathic Co-Pilot is a real-time multimodal **Live Agent** (Gemini Live Agent Challenge) built with the **Gemini Live API** on **Google Cloud**. It augments difficult human conversations by providing subtle, interruptible whisper coaching based on conversational signals such as tone shifts, pauses, and turn-taking dynamics.  
 Instead of replacing one side of the interaction, Empathic Co-Pilot acts as an invisible social prosthetic—supporting the user with grounded communication strategies derived from active listening and nonviolent communication principles.
 
-The **backend** is hosted on **Google Cloud Run** and uses **Gemini Live via Vertex AI** for real-time audio and coaching.
+The **backend** is hosted on **Google Cloud Run** and uses **Gemini Live via Vertex AI** for real-time audio, backchanneling, and coaching TTS.
+
+**Challenge alignment:** Uses **Gemini Live API** (real-time audio in/out, interruptible); **Google GenAI SDK** (google-genai); **Google Cloud** (Cloud Run, Vertex AI, optional Speech-to-Text for live transcript); **multimodal** (audio stream + optional webcam for vision-aware coaching). No simple text-in/text-out—full duplex audio and signal-based coaching.
 
 ---
 
@@ -109,14 +111,15 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for copy-paste steps (backend + frontend) a
 | Variable | Description |
 |----------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (required for Vertex AI). |
-| `GOOGLE_CLOUD_REGION` | Region (default `europe-west1`; must be a [Live model–supported region](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-live-api)). |
-| `GEMINI_MODEL` | Gemini Live model (default `gemini-live-2.5-flash-native-audio`). |
+| `GOOGLE_CLOUD_REGION` | Vertex AI region (default `us-central1` so Gemini Live `session.receive()` gets messages; use `europe-west1` for EU data residency if needed). |
+| `GEMINI_MODEL` | Gemini Live model (default `gemini-live-2.5-flash-native-audio`). Requires `google-genai>=1.50.0`. |
 | `TENSION_WHISPER_THRESHOLD` | Tension score (0–100) above which a coaching whisper is triggered (default `20`). |
 | `BARGE_IN_RMS_THRESHOLD` | RMS threshold for barge-in (default `0.15`). |
 | `COACHING_GROUNDING` | Set to `1` to enable Google Search grounding for coaching (NVC/citations). Default `0`. |
 | `COACHING_LIVE_AUDIO` | Set to `1` to use Gemini Live TTS for coaching whispers (PCM16 mono 24 kHz). Default `1`; set to `0` for browser Web Speech API only. |
 | `LIVE_BACKCHANNEL` | Set to `1` (default) to enable Gemini Live empathetic backchanneling ("Mmhm", "I see"). Set to `0` for silent transcription only. |
 | `GEMINI_RECONNECT` | Set to `1` (default) to attempt reconnecting the Gemini Live session when the recv stream drops; set to `0` to stay in degraded mode only. |
+| `LIVE_STT_STREAMING` | Set to `1` (default) to use Cloud Speech-to-Text streaming for **live transcription as you speak** when Gemini Live does not emit transcript. Set to `0` to use batch fallback only. |
 
 **Auth (choose one):**
 

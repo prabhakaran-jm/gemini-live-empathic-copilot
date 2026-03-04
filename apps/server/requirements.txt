@@ -3,8 +3,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 websockets>=14.0
 
-# Gemini Live API (real client; optional when MOCK=1)
-google-genai>=1.0.0
+# Gemini Live API (real client; optional when MOCK=1). Use >=1.50 for reliable session.receive().
+google-genai>=1.50.0
+# Real-time transcription when Gemini Live does not emit input_audio_transcription (LIVE_STT_STREAMING=1).
+google-cloud-speech>=2.24.0
 
 # Tests
 pytest>=8.0.0

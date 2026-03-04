@@ -30,17 +30,19 @@ cd infra\cloudrun
 
 Replace `YOUR_PROJECT_ID` with your Google Cloud project ID. The script builds the image with Cloud Build, deploys to Cloud Run, and prints the **service URL**.
 
-**Important:** Grant the Cloud Run service account **Vertex AI** access (e.g. "Vertex AI User"). The script prints the service account to use.
+**Important:** Grant the Cloud Run service account **Vertex AI** access (e.g. "Vertex AI User") and **Cloud Speech-to-Text** access (e.g. "Cloud Speech-to-Text User") for live transcription. The script prints the service account to use.
 
 **Backend env vars** (set by the script; override via env before running if needed):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GOOGLE_CLOUD_REGION` | `europe-west1` | Region for Vertex AI. |
+| `GOOGLE_CLOUD_REGION` | `us-central1` | Vertex AI region (deploy script defaults to us-central1 so Live API receive stream works; set `VERTEX_AI_LOCATION=europe-west1` to override). |
 | `GEMINI_MODEL` | `gemini-live-2.5-flash-native-audio` | Gemini Live model. |
 | `BARGE_IN_RMS_THRESHOLD` | `0.15` | RMS threshold for barge-in. |
 | `TENSION_WHISPER_THRESHOLD` | `20` | Tension score ≥ this triggers a whisper. |
 | `COACHING_GROUNDING` | `0` | Set to `1`, `true`, or `yes` to enable Google Search grounding for coaching whispers (citations). |
+
+**Gemini Live:** Backend uses Vertex AI [Gemini 2.5 Flash Live API](https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-live-api). Model IDs: GA `gemini-live-2.5-flash-native-audio`; preview `gemini-live-2.5-flash-preview-native-audio`, `gemini-live-2.5-flash-preview-native-audio-09-2025`. Requires `google-genai>=1.50.0`. We request `input_audio_transcription` only (no `output_audio_transcription`) for reliable input transcript stream.
 
 **Verify:** `curl https://YOUR_SERVICE_URL/health` → expect `{"status":"ok"}`. Save the service URL for the frontend.
 

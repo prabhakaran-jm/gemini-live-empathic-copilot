@@ -2,6 +2,8 @@
 
 Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
 
+**Gemini Live Agent Challenge:** This project uses the **Gemini Live API** (Vertex AI), the **Google GenAI SDK**, and **Google Cloud** (Cloud Run, Vertex AI, optional Speech-to-Text). Real-time audio in/out, interruptible agent, multimodal (audio + optional vision).
+
 ---
 
 ## Prerequisites
@@ -90,5 +92,6 @@ Follow [DEPLOY.md](DEPLOY.md) to build and deploy the server (and optionally the
 | **WebSocket fails / wrong backend** | If using Cloud Run: set `VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws` (not `https`). Restart `npm run dev` after changing env. Check browser console for WS errors. |
 | **403 or Vertex / Gemini errors** | Backend may lack Vertex AI permissions. On Cloud Run, the service account needs e.g. "Vertex AI User". See [DEPLOY.md](DEPLOY.md); deploy script prints the service account to grant. For local dev with API key, ensure `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY` is set. |
 | **No transcript, "Gemini unavailable" message** | Backend is in degraded mode (Gemini connect failed). You still get tension + whispers. Check backend logs and Vertex/API key configuration. |
+| **Backend logs "_receive_loop ended (received 0 messages)"** | Use Vertex in **us-central1** (`GOOGLE_CLOUD_REGION=us-central1` or `VERTEX_AI_LOCATION=us-central1`) and `google-genai>=1.50.0`. See [DEPLOY.md](DEPLOY.md). |
 | **Transcript shows only "Listening…"** | Backend may not be receiving transcription from Gemini Live. Confirm you're not in MOCK mode. Speak clearly for 5–10 s; transcription can appear after short pauses. Check backend logs for "Live transcript" or "transcript (fallback)" at INFO. With `LOG_LEVEL=DEBUG`, backend logs one-time `server_content attrs` to verify API response shape. Ensure mic is working and audio is being sent (e.g. tension bar moves when you speak). |
 | **Nothing happens on Start** | Confirm `/health` returns 200 for the backend you’re using. Check Event log for `ready` or `error` messages. Ensure WS URL is correct (e.g. `wss://` for HTTPS Cloud Run). |

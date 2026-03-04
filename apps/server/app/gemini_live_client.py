@@ -18,9 +18,14 @@ from typing import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
-# Env vars for real client
+# Env vars for real client.
+# Use us-central1 for Gemini Live if receive() yields 0 messages in other regions (e.g. europe-west1).
 GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
+GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
+# Vertex Live API model IDs (see Vertex 2.5 Flash Live API docs):
+#   GA:  gemini-live-2.5-flash-native-audio
+#   Preview: gemini-live-2.5-flash-preview-native-audio, gemini-live-2.5-flash-preview-native-audio-09-2025
+# We use input_audio_transcription only (no output_audio_transcription) to avoid text vs audio ambiguity (cf. python-genai#1725).
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
@@ -820,8 +825,9 @@ async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) 
         wav_bytes = _pcm16_to_wav_bytes(pcm_norm, sample_rate_hz=sample_rate_hz)
         prompt = (
             "Transcribe the spoken words from this audio. "
-            "Return only the transcript text, without labels, punctuation-only output, or commentary. "
-            "If no speech is present, return an empty string."
+            "Return only the transcript text, no labels or commentary. "
+            "If there is no clear speech or only silence/noise, return exactly: [no speech]. "
+            "Do not return only punctuation (e.g. a single period)."
         )
         contents = [
             types.Content(
@@ -844,6 +850,17 @@ async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) 
         out = _sanitize_transcript_text(text) if text else None
         if out:
             return out
+        # If sanitization filtered it out but the model returned meaningful text,
+        # use the raw text so the UI has a transcript. Reject punctuation-only (e.g. ".").
+        if text and isinstance(text, str):
+            raw = text.strip().strip('"').strip("'").strip()
+            if raw and raw.lower() != "[no speech]" and len(re.findall(r"[A-Za-z0-9]", raw)) >= 2:
+                if should_log:
+                    logger.info(
+                        "Fallback transcription using raw text (sanitizer rejected): %s",
+                        raw[:120],
+                    )
+                return raw
         if should_log:
             logger.info(
                 "Fallback transcription returned no usable text (model=%s, bytes=%s)",
