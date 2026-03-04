@@ -37,6 +37,8 @@ OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
 TELEMETRY_QUEUE_MAXSIZE = 32
 TRANSCRIPT_CONTEXT_MAX_CHARS = 4000
+ACTIVITY_START_RMS_THRESHOLD = float(os.environ.get("ACTIVITY_START_RMS_THRESHOLD", "0.01"))
+ACTIVITY_END_SILENCE_SEC = float(os.environ.get("ACTIVITY_END_SILENCE_SEC", "0.8"))
 COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower() in (
     "1",
     "true",
@@ -86,6 +88,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
     interrupted_events: deque[float] = deque()
     transcript_context: str = ""
     latest_frame_base64: str | None = None  # optional webcam frame for vision-aware coaching
+    user_activity_active: bool = False
+    last_voice_ts: float | None = None
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -203,7 +207,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def watch_events_and_reconnect() -> None:
         """When consume_recv_events exits (Live stream died), try to reconnect and restart the recv loop."""
-        nonlocal session, events_task, degraded_mode
+        nonlocal session, events_task, degraded_mode, user_activity_active, last_voice_ts
         try:
             while running and session is not None and events_task is not None:
                 try:
@@ -216,6 +220,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     return
                 old_session = session
                 session = None
+                user_activity_active = False
+                last_voice_ts = None
                 try:
                     await old_session.close()
                 except Exception:
@@ -329,6 +335,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     img = (config.get("image") or "").strip()
                     latest_frame_base64 = img if img else None
                 await send_json(websocket, {"type": "ready"})
+                user_activity_active = False
+                last_voice_ts = None
                 if not MOCK_MODE:
                     try:
                         client = get_gemini_client()
@@ -362,6 +370,11 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     except asyncio.CancelledError:
                         pass
                 if session:
+                    if user_activity_active and hasattr(session, "end_activity"):
+                        await session.end_activity()
+                        user_activity_active = False
+                    if hasattr(session, "end_audio_stream"):
+                        await session.end_audio_stream()
                     await session.close()
                     session = None
                 if agent_task:
@@ -422,19 +435,32 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 rms_ema = rms_ema_ref[0]
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
+                now_ts = time.time()
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
                     is_silence=is_silence,
                     is_overlap=barge_in_trigger,
-                    ts=time.time(),
+                    ts=now_ts,
                     semantic_score=compute_semantic_tension(transcript_context),
                 )
                 enqueue_latest_telemetry(telemetry)
                 if session and not MOCK_MODE:
+                    if rms_ema >= ACTIVITY_START_RMS_THRESHOLD:
+                        last_voice_ts = now_ts
+                        if not user_activity_active and hasattr(session, "start_activity"):
+                            await session.start_activity()
+                            user_activity_active = True
+                    elif (
+                        user_activity_active
+                        and last_voice_ts is not None
+                        and now_ts - last_voice_ts >= ACTIVITY_END_SILENCE_SEC
+                        and hasattr(session, "end_activity")
+                    ):
+                        await session.end_activity()
+                        user_activity_active = False
                     if barge_in_trigger:
                         if hasattr(session, "stop_generation"):
                             await session.stop_generation()
-                        now_ts = time.time()
                         interrupted_events.append(now_ts)
                         while interrupted_events and now_ts - interrupted_events[0] > OVERLAP_WINDOW_SEC:
                             interrupted_events.popleft()
@@ -450,6 +476,11 @@ async def handle_websocket(websocket: WebSocket) -> None:
     finally:
         if session:
             try:
+                if user_activity_active and hasattr(session, "end_activity"):
+                    await session.end_activity()
+                    user_activity_active = False
+                if hasattr(session, "end_audio_stream"):
+                    await session.end_audio_stream()
                 await session.close()
             except Exception:
                 pass

@@ -92,6 +92,16 @@ class IGeminiLiveSession(ABC):
         if False:
             yield
 
+    # Optional activity controls for realtime audio streaming/VAD nudging.
+    async def start_activity(self) -> None:
+        await asyncio.sleep(0)
+
+    async def end_activity(self) -> None:
+        await asyncio.sleep(0)
+
+    async def end_audio_stream(self) -> None:
+        await asyncio.sleep(0)
+
 
 # --- Real implementation (google-genai) ---
 
@@ -127,6 +137,7 @@ class RealGeminiLiveSession(IGeminiLiveSession):
         self._cm = _cm  # async context manager, for __aexit__ on close
         self._closed = False
         self._interrupted = False
+        self._activity_started = False
         self._sent_audio_chunks = 0
         self._event_queue: asyncio.Queue[LiveEvent | None] = asyncio.Queue()
 
@@ -139,6 +150,8 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             return
         try:
             from google.genai import types
+            if not self._activity_started:
+                await self.start_activity()
             await self._session.send_realtime_input(
                 audio=types.Blob(data=raw, mime_type="audio/pcm;rate=16000")
             )
@@ -155,8 +168,38 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             await self._session.send_realtime_input(
                 activity_end=types.ActivityEnd()
             )
+            self._activity_started = False
         except Exception:
             pass
+
+    async def start_activity(self) -> None:
+        if self._closed or self._activity_started:
+            return
+        try:
+            from google.genai import types
+            await self._session.send_realtime_input(activity_start=types.ActivityStart())
+            self._activity_started = True
+        except Exception as e:
+            logger.debug("start_activity failed: %s", e)
+
+    async def end_activity(self) -> None:
+        if self._closed or not self._activity_started:
+            return
+        try:
+            from google.genai import types
+            await self._session.send_realtime_input(activity_end=types.ActivityEnd())
+        except Exception as e:
+            logger.debug("end_activity failed: %s", e)
+        finally:
+            self._activity_started = False
+
+    async def end_audio_stream(self) -> None:
+        if self._closed:
+            return
+        try:
+            await self._session.send_realtime_input(audio_stream_end=True)
+        except Exception as e:
+            logger.debug("end_audio_stream failed: %s", e)
 
     def _extract_transcript_from_obj(self, obj: object, seen: set | None = None) -> list[str]:
         """Recursively extract transcript-like strings from SDK response objects (for API variants)."""
