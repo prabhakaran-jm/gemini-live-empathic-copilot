@@ -20,7 +20,7 @@ $VertexAiLocation = if ($env:VERTEX_AI_LOCATION) {
 }
 $GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-live-2.5-flash-native-audio" }
 $BargeInRms = if ($env:BARGE_IN_RMS_THRESHOLD) { $env:BARGE_IN_RMS_THRESHOLD } else { "0.15" }
-$TensionWhisperThreshold = if ($env:TENSION_WHISPER_THRESHOLD) { $env:TENSION_WHISPER_THRESHOLD } else { "20" }
+$TensionWhisperThreshold = if ($env:TENSION_WHISPER_THRESHOLD) { $env:TENSION_WHISPER_THRESHOLD } else { "40" }
 $CoachingGrounding = if ($env:COACHING_GROUNDING) { $env:COACHING_GROUNDING } else { "0" }
 $CoachingLiveAudio = if ($env:COACHING_LIVE_AUDIO) {
   $env:COACHING_LIVE_AUDIO
