@@ -66,6 +66,34 @@ function speakWhisper(text) {
   }
 }
 
+/**
+ * Speak short backchannel text softly (e.g., "Okay", "Mhmm"), without
+ * interrupting foreground coaching whisper playback.
+ */
+function speakBackchannel(text) {
+  if (!text || typeof text !== 'string') return false
+  if (!('speechSynthesis' in window)) return false
+  if (Date.now() - lastWhisperPlayedAt < 5000) return true // suppress near whisper
+  try {
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.95
+    utterance.pitch = 1.0
+    utterance.volume = 0.18
+    const voices = window.speechSynthesis.getVoices()
+    const preferred = voices.find(v =>
+      v.name.includes('Samantha') || v.name.includes('Google UK English Female')
+    )
+    if (preferred) utterance.voice = preferred
+    window.speechSynthesis.speak(utterance)
+    return true
+  } catch (err) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('Backchannel speech failed (non-critical):', err?.message || err)
+    }
+    return false
+  }
+}
+
 let currentWhisperAudioCtx = null
 let lastWhisperPlayedAt = 0
 
@@ -246,6 +274,9 @@ export default function App() {
       }
     } else if (msg.type === 'backchannel_audio') {
       if (msg.audio_base64) playBackchannelAudio(msg.audio_base64)
+    } else if (msg.type === 'backchannel_text') {
+      if (msg.text) speakBackchannel(msg.text)
+      addLog('in', { type: 'backchannel_text', text: msg.text })
     } else if (msg.type === 'event') {
       addLog('in', { type: 'event', name: msg.name })
     } else if (msg.type === 'error') {

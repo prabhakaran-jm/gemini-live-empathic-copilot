@@ -27,17 +27,46 @@ logger = logging.getLogger(__name__)
 
 MOCK_MODE = os.environ.get("MOCK", "").lower() in ("1", "true", "yes")
 LIVE_STT_STREAMING = os.environ.get("LIVE_STT_STREAMING", "1").strip().lower() in ("1", "true", "yes")
+LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
 TRANSCRIPT_CONTEXT_MAX_CHARS = 2000
 BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
 RMS_EMA_ALPHA = 0.4  # rms_ema = (1-alpha)*prev + alpha*current — higher alpha = faster response
 SILENCE_RMS_THRESHOLD = 0.05
 WHISPER_COOLDOWN_SEC = 20.0
-TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "40"))
+TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "35"))
 SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
 WHISPER_MIN_TRANSCRIPT_CHARS = int(os.environ.get("WHISPER_MIN_TRANSCRIPT_CHARS", "30"))
+STYLE_WHISPER_COOLDOWN_SEC = float(os.environ.get("STYLE_WHISPER_COOLDOWN_SEC", "8"))
+BACKCHANNEL_PAUSE_SEC = float(os.environ.get("BACKCHANNEL_PAUSE_SEC", "1.0"))
+BACKCHANNEL_COOLDOWN_SEC = float(os.environ.get("BACKCHANNEL_COOLDOWN_SEC", "4.0"))
+BACKCHANNEL_SPEECH_RMS_THRESHOLD = float(os.environ.get("BACKCHANNEL_SPEECH_RMS_THRESHOLD", "0.02"))
+
+STYLE_WHISPERS: dict[str, str] = {
+    "normal": "You sound calm and clear. Keep this steady pace.",
+    "escalated": "You sound tense. Slow down and make one clear request.",
+    "calm": "Nice reset. Stay collaborative and confirm next steps together.",
+}
+
+ESCALATION_MARKERS: tuple[str, ...] = (
+    "ridiculous",
+    "you always",
+    "you never",
+    "never listen",
+    "ignore my deadlines",
+    "only one taking",
+)
+
+CALMING_MARKERS: tuple[str, ...] = (
+    "i don't want this to turn into a fight",
+    "i dont want this to turn into a fight",
+    "clear about expectations",
+    "plan that works for both of us",
+    "on the same page",
+    "check in about the last project",
+)
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -64,10 +93,18 @@ async def handle_websocket(websocket: WebSocket) -> None:
     tension_history: list[tuple[float, int]] = []
     last_whisper_ts: float = 0.0
     last_whisper_text: str = ""
+    last_style_whisper_ts: float = 0.0
+    pending_style_whisper: str | None = None
+    conversation_style: str = "unknown"
+    semantic_pressure: float = 0.0
     interrupted_events: list[float] = []
     transcript_buffer: list[str] = []
     transcript_context: str = ""  # Full transcript context for coaching
     tension_crossed_up: bool = False  # Flag: tension just crossed upward past threshold
+    last_speech_ts: float = 0.0
+    backchannel_armed: bool = False
+    last_backchannel_ts: float = 0.0
+    last_model_backchannel_ts: float = 0.0
     audio_replay_buffer: list[str] = []  # Audio chunks buffered during reconnect
     MAX_REPLAY_CHUNKS = 50  # ~2 seconds of audio at 25 chunks/sec
     # STT state
@@ -106,7 +143,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
         stt_active = False
 
     def on_tension(score: int) -> None:
-        nonlocal last_tension_score, prev_tension_score, tension_history, tension_crossed_up
+        nonlocal last_tension_score, prev_tension_score, tension_history, tension_crossed_up, semantic_pressure
+        semantic_boost = int(semantic_pressure * 55.0)
+        score = int(min(100, max(0, max(score, score + semantic_boost))))
         prev_tension_score = last_tension_score
         last_tension_score = score
         # Detect upward crossing of whisper threshold
@@ -122,6 +161,30 @@ async def handle_websocket(websocket: WebSocket) -> None:
         asyncio.create_task(
             send_json(websocket, {"type": "tension", "score": score, "ts": int(now * 1000)})
         )
+
+    def update_semantic_state(text: str) -> None:
+        """Update semantic pressure/style from user transcript text."""
+        nonlocal semantic_pressure, conversation_style, pending_style_whisper
+        lower = text.lower()
+        escalation_hits = sum(1 for m in ESCALATION_MARKERS if m in lower)
+        calming_hits = sum(1 for m in CALMING_MARKERS if m in lower)
+        new_style = conversation_style
+
+        if escalation_hits > 0:
+            semantic_pressure = min(1.0, max(semantic_pressure * 0.7, 0.45 + 0.12 * escalation_hits))
+            new_style = "escalated"
+        elif calming_hits > 0:
+            semantic_pressure = max(0.0, semantic_pressure - (0.35 + 0.10 * calming_hits))
+            new_style = "calm"
+        else:
+            semantic_pressure = max(0.0, semantic_pressure - 0.04)
+            if semantic_pressure <= 0.15 and len(lower.split()) >= 6:
+                new_style = "normal"
+
+        if new_style != conversation_style:
+            conversation_style = new_style
+            if new_style in STYLE_WHISPERS:
+                pending_style_whisper = new_style
 
     async def run_tension_loop() -> None:
         await compute_tension_loop(telemetry_queue, tension_state, on_tension, interval_sec=0.5)
@@ -154,7 +217,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def _consume_one_session() -> None:
         """Drain recv_events from the current session until it ends."""
-        nonlocal agent_output_started, transcript_context
+        nonlocal agent_output_started, transcript_context, last_model_backchannel_ts
         if session is None or not hasattr(session, "recv_events"):
             return
         async for ev in session.recv_events():
@@ -171,11 +234,13 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     continue
                 transcript_buffer.append(ev.text)
                 transcript_context = (transcript_context + " " + ev.text).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                update_semantic_state(ev.text)
                 await send_json(
                     websocket,
                     {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
                 )
             elif ev.kind == "backchannel_audio" and ev.audio_base64:
+                last_model_backchannel_ts = time.time()
                 # Forward backchannel audio (Ok, mhmm) to browser — a key feature
                 await send_json(
                     websocket,
@@ -258,6 +323,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 last_final_text = t
                 transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
                 transcript_buffer.append(t)
+                update_semantic_state(t)
                 await send_json(
                     websocket,
                     {"type": "transcript", "delta": t + " ", "ts": int(time.time() * 1000)},
@@ -271,14 +337,53 @@ async def handle_websocket(websocket: WebSocket) -> None:
     async def whisper_loop() -> None:
         """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
         nonlocal last_whisper_ts, last_whisper_text, prev_tension_score, last_tension_score, tension_crossed_up
+        nonlocal pending_style_whisper, last_style_whisper_ts, backchannel_armed
+        nonlocal last_backchannel_ts, last_model_backchannel_ts, last_speech_ts
         while running and (session is not None or degraded_mode):
             await asyncio.sleep(0.25)
             now = time.time()
             if not running or (session is None and not degraded_mode):
                 return
+            if LIVE_BACKCHANNEL and backchannel_armed and not agent_output_started:
+                if (
+                    now - last_speech_ts >= BACKCHANNEL_PAUSE_SEC
+                    and now - last_backchannel_ts >= BACKCHANNEL_COOLDOWN_SEC
+                    and now - last_model_backchannel_ts >= 2.0
+                    and now - last_whisper_ts >= 2.0
+                ):
+                    backchannel_armed = False
+                    last_backchannel_ts = now
+                    text = "Mhmm." if int(now * 1000) % 2 else "Okay."
+                    await send_json(
+                        websocket,
+                        {"type": "backchannel_text", "text": text, "ts": int(now * 1000)},
+                    )
+            transcript_text = (transcript_context or "".join(transcript_buffer)).strip()
+            if (
+                pending_style_whisper is not None
+                and len(transcript_text) >= WHISPER_MIN_TRANSCRIPT_CHARS
+                and now - last_style_whisper_ts >= STYLE_WHISPER_COOLDOWN_SEC
+                and now - last_whisper_ts >= 2.0
+            ):
+                style = pending_style_whisper
+                pending_style_whisper = None
+                style_text = STYLE_WHISPERS.get(style)
+                if style_text:
+                    last_style_whisper_ts = now
+                    last_whisper_ts = now
+                    last_whisper_text = style_text
+                    await send_json(
+                        websocket,
+                        {
+                            "type": "whisper",
+                            "text": style_text,
+                            "move": f"style_{style}",
+                            "ts": int(now * 1000),
+                        },
+                    )
+                    continue
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
-            transcript_text = (transcript_context or "".join(transcript_buffer)).strip()
             if len(transcript_text) < WHISPER_MIN_TRANSCRIPT_CHARS:
                 continue
             trigger = None
@@ -435,6 +540,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 rms_ema_ref[0] = (1.0 - RMS_EMA_ALPHA) * rms_ema_ref[0] + RMS_EMA_ALPHA * rms_raw
                 rms_ema = rms_ema_ref[0]
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
+                if rms_ema >= BACKCHANNEL_SPEECH_RMS_THRESHOLD:
+                    last_speech_ts = time.time()
+                    backchannel_armed = True
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 telemetry = AudioTelemetry(
                     rms=rms_ema,
