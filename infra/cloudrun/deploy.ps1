@@ -10,6 +10,13 @@ param(
 if (-not $Region) { $Region = "europe-west1" }
 
 $ServiceName = if ($env:CLOUD_RUN_SERVICE_NAME) { $env:CLOUD_RUN_SERVICE_NAME } else { "empathic-copilot" }
+$VertexAiLocation = if ($env:VERTEX_AI_LOCATION) {
+  $env:VERTEX_AI_LOCATION
+} elseif ($env:GOOGLE_CLOUD_REGION_RUNTIME) {
+  $env:GOOGLE_CLOUD_REGION_RUNTIME
+} else {
+  $Region
+}
 $GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-live-2.5-flash-native-audio" }
 $BargeInRms = if ($env:BARGE_IN_RMS_THRESHOLD) { $env:BARGE_IN_RMS_THRESHOLD } else { "0.15" }
 $TensionWhisperThreshold = if ($env:TENSION_WHISPER_THRESHOLD) { $env:TENSION_WHISPER_THRESHOLD } else { "20" }
@@ -33,6 +40,7 @@ $Image = "gcr.io/$ProjectId/${ServiceName}:latest"
 Write-Host "Building and deploying to Cloud Run..."
 Write-Host "  Project: $ProjectId"
 Write-Host "  Region:  $Region"
+Write-Host "  Vertex:  $VertexAiLocation"
 Write-Host "  Service: $ServiceName"
 
 # Build with Cloud Build
@@ -49,7 +57,7 @@ gcloud run deploy $ServiceName `
   --timeout 3600 `
   --concurrency 10 `
   --min-instances 1 `
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,GEMINI_RECONNECT=$GeminiReconnect,GEMINI_LIVE_USE_DICT_CONFIG=$GeminiLiveUseDictConfig"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$VertexAiLocation,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,GEMINI_RECONNECT=$GeminiReconnect,GEMINI_LIVE_USE_DICT_CONFIG=$GeminiLiveUseDictConfig"
 
 $ServiceUrl = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(status.url)"
 $SaEmail = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(spec.template.spec.serviceAccountName)"

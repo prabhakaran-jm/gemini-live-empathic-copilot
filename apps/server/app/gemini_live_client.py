@@ -9,6 +9,7 @@ import base64
 import io
 import logging
 import os
+import re
 import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -683,6 +684,13 @@ async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) 
             return None
         lower = out.lower()
         if lower in {"", "no speech", "no intelligible speech", "[silence]", "(silence)"}:
+            return None
+        # Filter non-content artifacts from generic models (punctuation-only, disclaimers).
+        if not any(ch.isalnum() for ch in out):
+            return None
+        if len(re.findall(r"[A-Za-z0-9]", out)) < 2:
+            return None
+        if lower.startswith(("no intelligible", "no speech", "i can't", "i cannot")):
             return None
         return out
     except Exception as e:
