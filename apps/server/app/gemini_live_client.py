@@ -468,7 +468,8 @@ class RealGeminiLiveClient(IGeminiLiveClient):
         live_config = None
         if is_native_audio:
             dict_config = {
-                "response_modalities": ["AUDIO"],
+                # For Live transcription, docs require text to be included in response_modalities.
+                "response_modalities": ["audio", "text"],
                 "speech_config": {
                     "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
                 },
@@ -489,7 +490,8 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                 try:
                     from google.genai import types
                     kwargs = {
-                        "response_modalities": ["AUDIO"],
+                        # For Live transcription, include text alongside audio.
+                        "response_modalities": ["audio", "text"],
                         "speech_config": types.SpeechConfig(
                             voice_config=types.VoiceConfig(
                                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
@@ -526,7 +528,7 @@ class RealGeminiLiveClient(IGeminiLiveClient):
             # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
             # Do NOT include speech_config with TEXT — they are incompatible.
             live_config = {
-                "response_modalities": ["TEXT"],
+                "response_modalities": ["text"],
             }
 
         logger.info("Connecting to Gemini Live: model=%s, native_audio=%s", model, is_native_audio)
