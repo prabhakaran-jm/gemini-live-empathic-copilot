@@ -37,6 +37,7 @@ SILENCE_THRESHOLD_SEC = 2.5
 TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
+WHISPER_MIN_TRANSCRIPT_CHARS = int(os.environ.get("WHISPER_MIN_TRANSCRIPT_CHARS", "30"))
 
 
 async def send_json(ws: WebSocket, obj: dict[str, Any]) -> None:
@@ -277,6 +278,9 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 return
             if now - last_whisper_ts < WHISPER_COOLDOWN_SEC:
                 continue
+            transcript_text = (transcript_context or "".join(transcript_buffer)).strip()
+            if len(transcript_text) < WHISPER_MIN_TRANSCRIPT_CHARS:
+                continue
             trigger = None
             # (a) Tension crossed upward into >= threshold (consume flag set by on_tension)
             # Guard: only fire if current tension is STILL elevated (flag may be stale from a brief spike)
@@ -300,7 +304,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
             if trigger is not None:
                 last_whisper_ts = now
                 prev_tension_score = last_tension_score
-                transcript_text = transcript_context or "".join(transcript_buffer)
                 logger.info("Whisper triggered: %s, tension=%d, transcript_len=%d", trigger, last_tension_score, len(transcript_text))
                 try:
                     coaching_result = await generate_coaching(
