@@ -45,14 +45,20 @@ TRANSCRIPT_FALLBACK_ENABLED = os.environ.get("TRANSCRIPT_FALLBACK_ENABLED", "1")
     "true",
     "yes",
 )
-TRANSCRIPT_FALLBACK_WINDOW_SEC = float(os.environ.get("TRANSCRIPT_FALLBACK_WINDOW_SEC", "3.0"))
+TRANSCRIPT_FALLBACK_POLL_SEC = float(os.environ.get("TRANSCRIPT_FALLBACK_POLL_SEC", "0.5"))
+TRANSCRIPT_FALLBACK_END_SILENCE_SEC = float(
+    os.environ.get("TRANSCRIPT_FALLBACK_END_SILENCE_SEC", "1.2")
+)
+TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC = float(
+    os.environ.get("TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC", "6.0")
+)
 TRANSCRIPT_FALLBACK_MIN_VOICE_RMS = float(os.environ.get("TRANSCRIPT_FALLBACK_MIN_VOICE_RMS", "0.02"))
 TRANSCRIPT_FALLBACK_MIN_BYTES = int(
     os.environ.get("TRANSCRIPT_FALLBACK_MIN_BYTES", str(16000 * 2 * 2))
 )  # ~2s PCM16 mono 16k
 TRANSCRIPT_FALLBACK_MAX_BYTES = int(
-    os.environ.get("TRANSCRIPT_FALLBACK_MAX_BYTES", str(16000 * 2 * 12))
-)  # cap rolling buffer to ~12s
+    os.environ.get("TRANSCRIPT_FALLBACK_MAX_BYTES", str(16000 * 2 * 8))
+)  # cap rolling buffer to ~8s
 COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "1").strip().lower() in (
     "1",
     "true",
@@ -109,6 +115,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
     fallback_last_emitted: str = ""
     fallback_audio_buffer = bytearray()
     fallback_has_voice: bool = False
+    fallback_last_request_ts: float = 0.0
+    live_audio_unavailable: bool = False
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -265,7 +273,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def whisper_loop() -> None:
         """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
-        nonlocal last_whisper_ts, prev_tension_score, last_tension_score
+        nonlocal last_whisper_ts, prev_tension_score, last_tension_score, live_audio_unavailable
         while running and (session is not None or degraded_mode):
             await asyncio.sleep(0.25)
             now = time.time()
@@ -307,11 +315,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     "move": coaching_result["move"],
                     "ts": int(now * 1000),
                 }
-                if COACHING_LIVE_AUDIO:
+                if COACHING_LIVE_AUDIO and not live_audio_unavailable:
                     try:
                         audio_b64 = await generate_whisper_audio(coaching_result["text"])
                     except Exception as exc:  # pragma: no cover - defensive
-                        logger.exception("generate_whisper_audio failed: %s", exc)
+                        logger.warning("generate_whisper_audio failed; disabling live whisper audio: %s", exc)
+                        live_audio_unavailable = True
                         audio_b64 = None
                     if audio_b64:
                         whisper_msg["audio_base64"] = audio_b64
@@ -322,17 +331,16 @@ async def handle_websocket(websocket: WebSocket) -> None:
         Fallback transcript path:
         if Live doesn't emit transcript events, periodically transcribe buffered PCM via gemini-2.0-flash.
         """
-        nonlocal transcript_context, live_last_transcript_ts, fallback_last_emitted, fallback_has_voice
+        nonlocal transcript_context, live_last_transcript_ts, fallback_last_emitted, fallback_has_voice, fallback_last_request_ts
         while running and (session is not None or degraded_mode):
-            await asyncio.sleep(TRANSCRIPT_FALLBACK_WINDOW_SEC)
+            await asyncio.sleep(TRANSCRIPT_FALLBACK_POLL_SEC)
             if not running:
                 return
             if not TRANSCRIPT_FALLBACK_ENABLED:
                 continue
             # If Live transcript is active recently, fallback stays idle.
-            if live_last_transcript_ts and (time.time() - live_last_transcript_ts) < (
-                TRANSCRIPT_FALLBACK_WINDOW_SEC * 1.2
-            ):
+            now = time.time()
+            if live_last_transcript_ts and (now - live_last_transcript_ts) < 6.0:
                 fallback_audio_buffer.clear()
                 fallback_has_voice = False
                 continue
@@ -342,6 +350,15 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 # Avoid transcribing sustained silence.
                 fallback_audio_buffer.clear()
                 continue
+            silence_elapsed = (
+                last_voice_ts is None or (now - last_voice_ts) >= TRANSCRIPT_FALLBACK_END_SILENCE_SEC
+            )
+            buffer_full = len(fallback_audio_buffer) >= TRANSCRIPT_FALLBACK_MAX_BYTES
+            if not (silence_elapsed or buffer_full):
+                continue
+            if now - fallback_last_request_ts < TRANSCRIPT_FALLBACK_MIN_INTERVAL_SEC:
+                continue
+            fallback_last_request_ts = now
             pcm = bytes(fallback_audio_buffer)
             fallback_audio_buffer.clear()
             fallback_has_voice = False
@@ -410,8 +427,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 last_voice_ts = None
                 live_last_transcript_ts = 0.0
                 fallback_last_emitted = ""
+                fallback_last_request_ts = 0.0
                 fallback_audio_buffer.clear()
                 fallback_has_voice = False
+                live_audio_unavailable = False
                 if not MOCK_MODE:
                     try:
                         client = get_gemini_client()

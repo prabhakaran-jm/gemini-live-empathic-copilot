@@ -21,7 +21,13 @@ $GeminiModel = if ($env:GEMINI_MODEL) { $env:GEMINI_MODEL } else { "gemini-live-
 $BargeInRms = if ($env:BARGE_IN_RMS_THRESHOLD) { $env:BARGE_IN_RMS_THRESHOLD } else { "0.15" }
 $TensionWhisperThreshold = if ($env:TENSION_WHISPER_THRESHOLD) { $env:TENSION_WHISPER_THRESHOLD } else { "20" }
 $CoachingGrounding = if ($env:COACHING_GROUNDING) { $env:COACHING_GROUNDING } else { "0" }
-$CoachingLiveAudio = if ($env:COACHING_LIVE_AUDIO) { $env:COACHING_LIVE_AUDIO } else { "1" }
+$CoachingLiveAudio = if ($env:COACHING_LIVE_AUDIO) {
+  $env:COACHING_LIVE_AUDIO
+} elseif ($VertexAiLocation -eq "global") {
+  "0"
+} else {
+  "1"
+}
 $LiveBackchannel = if ($env:LIVE_BACKCHANNEL) { $env:LIVE_BACKCHANNEL } else { "1" }
 $GeminiReconnect = if ($env:GEMINI_RECONNECT) { $env:GEMINI_RECONNECT } else { "1" }
 $GeminiLiveUseDictConfig = if ($env:GEMINI_LIVE_USE_DICT_CONFIG) { $env:GEMINI_LIVE_USE_DICT_CONFIG } else { "1" }

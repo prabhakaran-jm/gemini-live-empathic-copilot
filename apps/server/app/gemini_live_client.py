@@ -10,6 +10,7 @@ import io
 import logging
 import os
 import re
+import time
 import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -26,6 +27,11 @@ LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("
 # Default dict config for main session; typed config can be re-enabled with GEMINI_LIVE_USE_DICT_CONFIG=0.
 # This is more resilient across SDK variants for realtime transcription fields.
 GEMINI_LIVE_USE_DICT_CONFIG = os.environ.get("GEMINI_LIVE_USE_DICT_CONFIG", "1").strip().lower() in ("1", "true", "yes")
+GEMINI_LIVE_FALLBACK_REGIONS = [
+    s.strip()
+    for s in os.environ.get("GEMINI_LIVE_FALLBACK_REGIONS", "europe-west1,us-central1").split(",")
+    if s.strip()
+]
 
 
 # --- Events yielded by recv_events() ---
@@ -108,7 +114,7 @@ class IGeminiLiveSession(ABC):
 
 # --- Real implementation (google-genai) ---
 
-def _make_genai_client():
+def _make_genai_client(location: str | None = None):
     """Build genai.Client from env: Vertex (ADC) or API key."""
     try:
         from google import genai
@@ -118,16 +124,17 @@ def _make_genai_client():
         ) from e
     if GOOGLE_API_KEY:
         return genai.Client(api_key=GOOGLE_API_KEY)
+    target_location = location or GOOGLE_CLOUD_REGION
     if GOOGLE_CLOUD_PROJECT:
         return genai.Client(
             vertexai=True,
             project=GOOGLE_CLOUD_PROJECT,
-            location=GOOGLE_CLOUD_REGION,
+            location=target_location,
         )
     return genai.Client(
         vertexai=True,
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
-        location=GOOGLE_CLOUD_REGION,
+        location=target_location,
     )
 
 
@@ -447,7 +454,6 @@ class RealGeminiLiveClient(IGeminiLiveClient):
     """Real client: one Gemini Live session per browser WS. Uses GOOGLE_CLOUD_* or API key."""
 
     async def connect(self, config: LiveSessionConfig) -> IGeminiLiveSession:
-        client = _make_genai_client()
         model = config.model
         is_native_audio = "native-audio" in model
 
@@ -532,12 +538,52 @@ class RealGeminiLiveClient(IGeminiLiveClient):
                 "response_modalities": ["text"],
             }
 
-        logger.info("Connecting to Gemini Live: model=%s, native_audio=%s", model, is_native_audio)
-        cm = client.aio.live.connect(model=model, config=live_config)
-        session = await cm.__aenter__()
-        real_session = RealGeminiLiveSession(config, session, cm)
-        asyncio.create_task(real_session._receive_loop())
-        return real_session
+        if GOOGLE_API_KEY:
+            locations_to_try: list[str | None] = [None]
+        else:
+            primary = GOOGLE_CLOUD_REGION or "europe-west1"
+            locations_to_try = [primary]
+            for loc in GEMINI_LIVE_FALLBACK_REGIONS:
+                if loc not in locations_to_try:
+                    locations_to_try.append(loc)
+
+        last_error: Exception | None = None
+        for idx, location in enumerate(locations_to_try):
+            try:
+                client = _make_genai_client(location=location)
+                logger.info(
+                    "Connecting to Gemini Live: model=%s, native_audio=%s, location=%s",
+                    model,
+                    is_native_audio,
+                    location or "api_key",
+                )
+                cm = client.aio.live.connect(model=model, config=live_config)
+                session = await cm.__aenter__()
+                real_session = RealGeminiLiveSession(config, session, cm)
+                asyncio.create_task(real_session._receive_loop())
+                return real_session
+            except Exception as e:
+                last_error = e
+                if idx >= len(locations_to_try) - 1:
+                    raise
+                msg = str(e)
+                retryable = (
+                    "Publisher Model" in msg
+                    or "policy violation" in msg.lower()
+                    or "1008" in msg
+                    or "not found" in msg.lower()
+                )
+                if retryable:
+                    logger.warning(
+                        "Gemini Live connect failed at location=%s, retrying next location: %s",
+                        location,
+                        e,
+                    )
+                    continue
+                raise
+        if last_error:
+            raise last_error
+        raise RuntimeError("Gemini Live connect failed with unknown error")
 
 
 async def generate_whisper_audio(text: str) -> str | None:
@@ -554,12 +600,6 @@ async def generate_whisper_audio(text: str) -> str | None:
         from google.genai import types
     except Exception as e:  # pragma: no cover - import guard
         logger.warning("generate_whisper_audio: google-genai not available: %s", e)
-        return None
-
-    try:
-        client = _make_genai_client()
-    except Exception as e:
-        logger.warning("generate_whisper_audio: failed to build client: %s", e)
         return None
 
     model = GEMINI_MODEL
@@ -587,38 +627,64 @@ async def generate_whisper_audio(text: str) -> str | None:
         logger.warning("generate_whisper_audio: failed to build LiveConnectConfig: %s", e)
         return None
 
+    if GOOGLE_API_KEY:
+        locations_to_try: list[str | None] = [None]
+    else:
+        primary = GOOGLE_CLOUD_REGION or "europe-west1"
+        locations_to_try = [primary]
+        for loc in GEMINI_LIVE_FALLBACK_REGIONS:
+            if loc not in locations_to_try:
+                locations_to_try.append(loc)
+
     audio_chunks: list[bytes] = []
-
-    cm = client.aio.live.connect(model=model, config=tts_config)
-    session = await cm.__aenter__()
-    try:
-        await session.send(input=text, end_of_turn=True)
-
-        async for msg in session.receive():
-            sc = getattr(msg, "server_content", None)
-            if sc is None:
-                continue
-            mt = getattr(sc, "model_turn", None)
-            if not mt:
-                continue
-            parts = getattr(mt, "parts", None)
-            if not parts:
-                continue
-            for part in parts:
-                inline = getattr(part, "inline_data", None)
-                if inline is not None:
-                    data = getattr(inline, "data", None)
-                    if isinstance(data, (bytes, bytearray)):
-                        audio_chunks.append(bytes(data))
-    except Exception as e:
-        logger.exception("generate_whisper_audio: error during TTS session: %s", e)
-        return None
-    finally:
+    for idx, location in enumerate(locations_to_try):
+        cm = None
         try:
-            await cm.__aexit__(None, None, None)
-        except Exception:
-            # Best-effort close
-            pass
+            client = _make_genai_client(location=location)
+            cm = client.aio.live.connect(model=model, config=tts_config)
+            session = await cm.__aenter__()
+            await session.send(input=text, end_of_turn=True)
+
+            async for msg in session.receive():
+                sc = getattr(msg, "server_content", None)
+                if sc is None:
+                    continue
+                mt = getattr(sc, "model_turn", None)
+                if not mt:
+                    continue
+                parts = getattr(mt, "parts", None)
+                if not parts:
+                    continue
+                for part in parts:
+                    inline = getattr(part, "inline_data", None)
+                    if inline is not None:
+                        data = getattr(inline, "data", None)
+                        if isinstance(data, (bytes, bytearray)):
+                            audio_chunks.append(bytes(data))
+            break
+        except Exception as e:
+            msg = str(e)
+            retryable = (
+                "Publisher Model" in msg
+                or "policy violation" in msg.lower()
+                or "1008" in msg
+                or "not found" in msg.lower()
+            )
+            if idx < len(locations_to_try) - 1 and retryable:
+                logger.warning(
+                    "generate_whisper_audio: location %s failed, retrying next location: %s",
+                    location,
+                    e,
+                )
+                continue
+            logger.warning("generate_whisper_audio: error during TTS session: %s", e)
+            return None
+        finally:
+            if cm is not None:
+                try:
+                    await cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
     if not audio_chunks:
         return None
