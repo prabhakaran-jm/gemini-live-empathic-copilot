@@ -76,6 +76,34 @@ async def handle_websocket(websocket: WebSocket) -> None:
     stt_reader_task: asyncio.Task | None = None
     stt_active: bool = False
 
+    async def stop_stt() -> None:
+        """Best-effort stop for streaming STT resources."""
+        nonlocal stt_audio_queue, stt_result_queue, stt_reader_task, stt_thread, stt_active
+        q = stt_audio_queue
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                # Free one slot, then signal shutdown.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if stt_reader_task and not stt_reader_task.done():
+            stt_reader_task.cancel()
+            try:
+                await stt_reader_task
+            except asyncio.CancelledError:
+                pass
+        stt_reader_task = None
+        stt_audio_queue = None
+        stt_result_queue = None
+        stt_thread = None
+        stt_active = False
+
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history, tension_crossed_up
         prev_tension_score = last_tension_score
@@ -125,7 +153,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def _consume_one_session() -> None:
         """Drain recv_events from the current session until it ends."""
-        nonlocal agent_output_started
+        nonlocal agent_output_started, transcript_context
         if session is None or not hasattr(session, "recv_events"):
             return
         async for ev in session.recv_events():
@@ -136,7 +164,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
             elif ev.kind == "agent_output_stopped":
                 agent_output_started = False
             elif ev.kind == "user_transcript_delta" and ev.text:
+                # Keep one transcript source at a time: when STT is active, suppress
+                # Gemini user transcript deltas to avoid duplicate UI text.
+                if stt_active:
+                    continue
                 transcript_buffer.append(ev.text)
+                transcript_context = (transcript_context + " " + ev.text).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
                 await send_json(
                     websocket,
                     {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
@@ -188,15 +221,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
     async def stt_result_reader_loop() -> None:
         """Read streaming STT results and send transcript to UI; update transcript_context.
 
-        Google Cloud STT sends cumulative interim results (e.g. "hey" → "hey I" → "hey I wanted").
-        We track how many characters we've already sent for the current utterance and only
-        send the NEW characters as a delta, preventing duplication.
+        We forward only final STT results to reduce duplicated/garbled transcript
+        fragments caused by revised cumulative interim hypotheses.
         """
         nonlocal transcript_context, stt_active, stt_audio_queue, stt_result_queue
         if stt_result_queue is None:
             return
         loop = asyncio.get_event_loop()
-        utterance_chars_sent = 0  # chars already sent for the current (non-final) utterance
+        last_final_text = ""
 
         def get_result():
             try:
@@ -216,29 +248,19 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 if not t:
                     continue
 
-                if is_final:
-                    # Final result: send remaining chars we haven't sent yet, then reset
-                    remaining = t[utterance_chars_sent:]
-                    if remaining:
-                        transcript_context = (transcript_context + " " + remaining).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-                        transcript_buffer.append(remaining)
-                        await send_json(
-                            websocket,
-                            {"type": "transcript", "delta": remaining + " ", "ts": int(time.time() * 1000)},
-                        )
-                    utterance_chars_sent = 0
-                else:
-                    # Interim result: only send new chars beyond what we've already sent
-                    if len(t) > utterance_chars_sent:
-                        new_part = t[utterance_chars_sent:]
-                        transcript_context = (transcript_context + " " + new_part).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-                        transcript_buffer.append(new_part)
-                        await send_json(
-                            websocket,
-                            {"type": "transcript", "delta": new_part, "ts": int(time.time() * 1000)},
-                        )
-                        utterance_chars_sent = len(t)
-                    # If len(t) <= utterance_chars_sent, STT revised earlier text — skip to avoid garbled output
+                # Only forward final STT results. Interims are cumulative and often revised,
+                # which creates repeated fragments in the UI transcript.
+                if not is_final:
+                    continue
+                if t == last_final_text:
+                    continue
+                last_final_text = t
+                transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                transcript_buffer.append(t)
+                await send_json(
+                    websocket,
+                    {"type": "transcript", "delta": t + " ", "ts": int(time.time() * 1000)},
+                )
         finally:
             logger.info("STT reader loop exited")
             stt_active = False
@@ -386,18 +408,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         await mock_task
                     except asyncio.CancelledError:
                         pass
-                # Stop STT
-                if stt_audio_queue is not None:
-                    try:
-                        stt_audio_queue.put(None, block=False)
-                    except queue.Full:
-                        pass
-                if stt_reader_task and not stt_reader_task.done():
-                    stt_reader_task.cancel()
-                    try:
-                        await stt_reader_task
-                    except asyncio.CancelledError:
-                        pass
+                await stop_stt()
                 await send_json(websocket, {"type": "stopped"})
                 break
             elif t == "audio":
@@ -470,10 +481,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         audio_replay_buffer.append(base64_audio)
                         if len(audio_replay_buffer) > MAX_REPLAY_CHUNKS:
                             audio_replay_buffer.pop(0)
+            elif t == "frame":
+                # Vision frame is optional for this MVP backend; accept as no-op.
+                continue
             else:
                 await send_json(websocket, {"type": "error", "message": f"Unknown type: {t}"})
 
     finally:
+        await stop_stt()
         if session:
             try:
                 await session.disconnect()
