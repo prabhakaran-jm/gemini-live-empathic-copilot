@@ -50,7 +50,7 @@ function speakWhisper(text) {
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.rate = 0.85
     utterance.pitch = 0.9
-    utterance.volume = 0.18
+    utterance.volume = 0.1
     const voices = window.speechSynthesis.getVoices()
     const preferred = voices.find(v =>
       v.name.includes('Samantha') || v.name.includes('Google UK English Female')
@@ -78,7 +78,7 @@ function speakBackchannel(text) {
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.rate = 0.95
     utterance.pitch = 1.0
-    utterance.volume = 0.18
+    utterance.volume = 0.08
     const voices = window.speechSynthesis.getVoices()
     const preferred = voices.find(v =>
       v.name.includes('Samantha') || v.name.includes('Google UK English Female')
@@ -132,7 +132,7 @@ function playWhisperAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.2
+    gain.gain.value = 0.12
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {
@@ -188,7 +188,7 @@ function playBackchannelAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.18 // Very soft — background acknowledgment, not foreground
+    gain.gain.value = 0.1 // Very soft - background acknowledgment, not foreground
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {
