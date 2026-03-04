@@ -39,6 +39,10 @@ TENSION_HIGH_WINDOW_SEC = 10.0
 OVERLAP_WINDOW_SEC = 5.0
 OVERLAP_MIN_COUNT = 2  # min "interrupted" events in last 5s for overlap heuristic
 WHISPER_MIN_TRANSCRIPT_CHARS = int(os.environ.get("WHISPER_MIN_TRANSCRIPT_CHARS", "30"))
+STYLE_WHISPERS_ENABLED = os.environ.get("STYLE_WHISPERS_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+ESCALATION_REQUIRED_FOR_WHISPER = os.environ.get("ESCALATION_REQUIRED_FOR_WHISPER", "1").strip().lower() in ("1", "true", "yes")
+ESCALATION_SEMANTIC_THRESHOLD = float(os.environ.get("ESCALATION_SEMANTIC_THRESHOLD", "0.45"))
+WHISPER_AFTER_SPEECH_PAUSE_SEC = float(os.environ.get("WHISPER_AFTER_SPEECH_PAUSE_SEC", "1.0"))
 STYLE_WHISPER_COOLDOWN_SEC = float(os.environ.get("STYLE_WHISPER_COOLDOWN_SEC", "8"))
 BACKCHANNEL_PAUSE_SEC = float(os.environ.get("BACKCHANNEL_PAUSE_SEC", "1.0"))
 BACKCHANNEL_COOLDOWN_SEC = float(os.environ.get("BACKCHANNEL_COOLDOWN_SEC", "4.0"))
@@ -143,9 +147,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
         stt_active = False
 
     def on_tension(score: int) -> None:
-        nonlocal last_tension_score, prev_tension_score, tension_history, tension_crossed_up, semantic_pressure
-        semantic_boost = int(semantic_pressure * 55.0)
-        score = int(min(100, max(0, max(score, score + semantic_boost))))
+        nonlocal last_tension_score, prev_tension_score, tension_history, tension_crossed_up
         prev_tension_score = last_tension_score
         last_tension_score = score
         # Detect upward crossing of whisper threshold
@@ -183,7 +185,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
         if new_style != conversation_style:
             conversation_style = new_style
-            if new_style in STYLE_WHISPERS:
+            if STYLE_WHISPERS_ENABLED and new_style in STYLE_WHISPERS:
                 pending_style_whisper = new_style
 
     async def run_tension_loop() -> None:
@@ -337,6 +339,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     async def whisper_loop() -> None:
         """Real or degraded: every 250ms check deterministic rules; send whisper from coaching.py if cooldown passed."""
         nonlocal last_whisper_ts, last_whisper_text, prev_tension_score, last_tension_score, tension_crossed_up
+        nonlocal semantic_pressure
         nonlocal pending_style_whisper, last_style_whisper_ts, backchannel_armed
         nonlocal last_backchannel_ts, last_model_backchannel_ts, last_speech_ts
         while running and (session is not None or degraded_mode):
@@ -360,7 +363,8 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     )
             transcript_text = (transcript_context or "".join(transcript_buffer)).strip()
             if (
-                pending_style_whisper is not None
+                STYLE_WHISPERS_ENABLED
+                and pending_style_whisper is not None
                 and len(transcript_text) >= WHISPER_MIN_TRANSCRIPT_CHARS
                 and now - last_style_whisper_ts >= STYLE_WHISPER_COOLDOWN_SEC
                 and now - last_whisper_ts >= 2.0
@@ -386,26 +390,33 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 continue
             if len(transcript_text) < WHISPER_MIN_TRANSCRIPT_CHARS:
                 continue
+            if last_speech_ts > 0 and now - last_speech_ts < WHISPER_AFTER_SPEECH_PAUSE_SEC:
+                continue
+            if ESCALATION_REQUIRED_FOR_WHISPER and semantic_pressure < ESCALATION_SEMANTIC_THRESHOLD:
+                continue
             trigger = None
-            # (a) Tension crossed upward into >= threshold (consume flag set by on_tension)
-            # Guard: only fire if current tension is STILL elevated (flag may be stale from a brief spike)
-            if tension_crossed_up and last_tension_score >= TENSION_WHISPER_THRESHOLD:
-                tension_crossed_up = False
+            if ESCALATION_REQUIRED_FOR_WHISPER:
                 trigger = "tension_cross"
-            elif tension_crossed_up:
-                tension_crossed_up = False  # discard stale flag
-            # (b) Overlap heuristic: high interruption rate in last 5s
-            if trigger is None:
-                recent = [t for t in interrupted_events if now - t <= OVERLAP_WINDOW_SEC]
-                if len(recent) >= OVERLAP_MIN_COUNT:
-                    trigger = "barge_in"
-            # (c) Silence >2.5s and tension was >=50 in last 10s (post-escalation silence)
-            if trigger is None and tension_state.silence_start is not None:
-                silence_sec = now - tension_state.silence_start
-                if silence_sec >= SILENCE_THRESHOLD_SEC:
-                    high_in_window = any(s >= 50 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
-                    if high_in_window:
-                        trigger = "post_escalation_silence"
+            else:
+                # Legacy deterministic trigger path when escalation-only mode is disabled.
+                # (a) Tension crossed upward into >= threshold
+                if tension_crossed_up and last_tension_score >= TENSION_WHISPER_THRESHOLD:
+                    tension_crossed_up = False
+                    trigger = "tension_cross"
+                elif tension_crossed_up:
+                    tension_crossed_up = False  # discard stale flag
+                # (b) Overlap heuristic: high interruption rate in last 5s
+                if trigger is None:
+                    recent = [t for t in interrupted_events if now - t <= OVERLAP_WINDOW_SEC]
+                    if len(recent) >= OVERLAP_MIN_COUNT:
+                        trigger = "barge_in"
+                # (c) Silence >2.5s and tension was >=50 in last 10s
+                if trigger is None and tension_state.silence_start is not None:
+                    silence_sec = now - tension_state.silence_start
+                    if silence_sec >= SILENCE_THRESHOLD_SEC:
+                        high_in_window = any(s >= 50 for _, s in tension_history if now - _ <= TENSION_HIGH_WINDOW_SEC)
+                        if high_in_window:
+                            trigger = "post_escalation_silence"
             if trigger is not None:
                 last_whisper_ts = now
                 prev_tension_score = last_tension_score

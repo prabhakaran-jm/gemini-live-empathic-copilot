@@ -30,6 +30,10 @@ $CoachingLiveAudio = if ($env:COACHING_LIVE_AUDIO) {
   "1"
 }
 $LiveBackchannel = if ($env:LIVE_BACKCHANNEL) { $env:LIVE_BACKCHANNEL } else { "1" }
+$EscalationRequiredForWhisper = if ($env:ESCALATION_REQUIRED_FOR_WHISPER) { $env:ESCALATION_REQUIRED_FOR_WHISPER } else { "1" }
+$EscalationSemanticThreshold = if ($env:ESCALATION_SEMANTIC_THRESHOLD) { $env:ESCALATION_SEMANTIC_THRESHOLD } else { "0.45" }
+$WhisperAfterSpeechPauseSec = if ($env:WHISPER_AFTER_SPEECH_PAUSE_SEC) { $env:WHISPER_AFTER_SPEECH_PAUSE_SEC } else { "1.0" }
+$StyleWhispersEnabled = if ($env:STYLE_WHISPERS_ENABLED) { $env:STYLE_WHISPERS_ENABLED } else { "0" }
 $GeminiReconnect = if ($env:GEMINI_RECONNECT) { $env:GEMINI_RECONNECT } else { "1" }
 $GeminiLiveUseDictConfig = if ($env:GEMINI_LIVE_USE_DICT_CONFIG) { $env:GEMINI_LIVE_USE_DICT_CONFIG } else { "1" }
 $LiveSttStreaming = if ($env:LIVE_STT_STREAMING) { $env:LIVE_STT_STREAMING } else { "1" }
@@ -65,7 +69,7 @@ gcloud run deploy $ServiceName `
   --timeout 3600 `
   --concurrency 10 `
   --min-instances 1 `
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$VertexAiLocation,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,GEMINI_RECONNECT=$GeminiReconnect,GEMINI_LIVE_USE_DICT_CONFIG=$GeminiLiveUseDictConfig,LIVE_STT_STREAMING=$LiveSttStreaming"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$VertexAiLocation,GEMINI_MODEL=$GeminiModel,BARGE_IN_RMS_THRESHOLD=$BargeInRms,TENSION_WHISPER_THRESHOLD=$TensionWhisperThreshold,COACHING_GROUNDING=$CoachingGrounding,COACHING_LIVE_AUDIO=$CoachingLiveAudio,LIVE_BACKCHANNEL=$LiveBackchannel,ESCALATION_REQUIRED_FOR_WHISPER=$EscalationRequiredForWhisper,ESCALATION_SEMANTIC_THRESHOLD=$EscalationSemanticThreshold,WHISPER_AFTER_SPEECH_PAUSE_SEC=$WhisperAfterSpeechPauseSec,STYLE_WHISPERS_ENABLED=$StyleWhispersEnabled,GEMINI_RECONNECT=$GeminiReconnect,GEMINI_LIVE_USE_DICT_CONFIG=$GeminiLiveUseDictConfig,LIVE_STT_STREAMING=$LiveSttStreaming"
 
 $ServiceUrl = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(status.url)"
 $SaEmail = gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(spec.template.spec.serviceAccountName)"

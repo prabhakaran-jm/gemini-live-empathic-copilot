@@ -50,7 +50,7 @@ function speakWhisper(text) {
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.rate = 0.85
     utterance.pitch = 0.9
-    utterance.volume = 0.35
+    utterance.volume = 0.18
     const voices = window.speechSynthesis.getVoices()
     const preferred = voices.find(v =>
       v.name.includes('Samantha') || v.name.includes('Google UK English Female')
@@ -132,7 +132,7 @@ function playWhisperAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.6
+    gain.gain.value = 0.2
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {
