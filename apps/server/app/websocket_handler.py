@@ -411,6 +411,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
         loop = asyncio.get_event_loop()
         _got_any_transcript = False
         _start_ts = time.time()
+        _last_interim_text = ""  # Track last interim to compute diff delta
 
         def get_result() -> tuple[str | None, bool] | None:
             try:
@@ -430,9 +431,31 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 t = transcript.strip()
                 if not t:
                     continue
-                transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                if is_final:
+                    # Final result: compute delta from last interim, update context, reset interim tracker.
+                    if t.startswith(_last_interim_text):
+                        delta_text = t[len(_last_interim_text):].strip()
+                    else:
+                        delta_text = t
+                    if delta_text:
+                        transcript_context = (transcript_context + " " + delta_text).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                    delta_text = (delta_text or "") + " "
+                    _last_interim_text = ""
+                else:
+                    # Interim result: send only the NEW portion since last interim.
+                    if t.startswith(_last_interim_text):
+                        delta_text = t[len(_last_interim_text):]
+                    elif len(t) > len(_last_interim_text):
+                        delta_text = t[len(_last_interim_text):]
+                    else:
+                        # Shorter or different — skip duplicate interims.
+                        continue
+                    if not delta_text.strip():
+                        _last_interim_text = t
+                        continue
+                    transcript_context = (transcript_context + " " + delta_text).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                    _last_interim_text = t
                 live_last_transcript_ts = time.time()
-                delta_text = t + (" " if is_final else "")
                 await send_json(
                     websocket,
                     {
