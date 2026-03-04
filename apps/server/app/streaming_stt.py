@@ -37,8 +37,13 @@ def _ensure_speech_client() -> bool:
         return False
 
 
-def _audio_request_generator(audio_queue: queue.Queue[bytes | None]) -> Any:
-    """Yield StreamingRecognizeRequest from queue; stop when None is received."""
+def _audio_request_generator(
+    audio_queue: queue.Queue[bytes | None], streaming_config: Any
+) -> Any:
+    """Yield StreamingRecognizeRequest starting with config, then audio chunks from queue."""
+    # The first message must contain the configuration.
+    yield _StreamingRecognizeRequest(streaming_config=streaming_config)
+
     while True:
         chunk = audio_queue.get()
         if chunk is None:
@@ -69,9 +74,11 @@ def run_streaming_stt(
             language_code=language_code,
         )
         streaming_config = _StreamingRecognitionConfig(config=config, interim_results=True)
-        responses = client.streaming_recognize(
-            streaming_config, _audio_request_generator(audio_queue)
-        )
+
+        # streaming_recognize takes an iterable of requests.
+        requests = _audio_request_generator(audio_queue, streaming_config)
+        responses = client.streaming_recognize(requests=requests)
+
         for response in responses:
             if not response.results:
                 continue

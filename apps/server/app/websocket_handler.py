@@ -125,6 +125,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     stt_audio_queue: Any = None
     stt_result_queue: Any = None
     stt_reader_task: asyncio.Task | None = None
+    stt_active: bool = False
 
     def on_tension(score: int) -> None:
         nonlocal last_tension_score, prev_tension_score, tension_history
@@ -400,7 +401,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
 
     async def stt_result_reader_loop() -> None:
         """Read streaming STT results and send transcript messages; update transcript_context."""
-        nonlocal transcript_context, live_last_transcript_ts
+        nonlocal transcript_context, live_last_transcript_ts, stt_active, stt_audio_queue, stt_result_queue
         if stt_result_queue is None:
             return
         loop = asyncio.get_event_loop()
@@ -411,28 +412,34 @@ async def handle_websocket(websocket: WebSocket) -> None:
             except queue.Empty:
                 return None
 
-        while running and stt_result_queue is not None:
-            item = await loop.run_in_executor(None, get_result)
-            if item is None:
-                continue
-            transcript, is_final = item
-            if transcript is None:
-                break
-            t = transcript.strip()
-            if not t:
-                continue
-            transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-            live_last_transcript_ts = time.time()
-            delta_text = t + (" " if is_final else "")
-            await send_json(
-                websocket,
-                {
-                    "type": "transcript",
-                    "delta": delta_text,
-                    "full": transcript_context,
-                    "ts": int(time.time() * 1000),
-                },
-            )
+        try:
+            while running and stt_result_queue is not None:
+                item = await loop.run_in_executor(None, get_result)
+                if item is None:
+                    continue
+                transcript, is_final = item
+                if transcript is None:
+                    break
+                t = transcript.strip()
+                if not t:
+                    continue
+                transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
+                live_last_transcript_ts = time.time()
+                delta_text = t + (" " if is_final else "")
+                await send_json(
+                    websocket,
+                    {
+                        "type": "transcript",
+                        "delta": delta_text,
+                        "full": transcript_context,
+                        "ts": int(time.time() * 1000),
+                    },
+                )
+        finally:
+            logger.info("Streaming STT reader loop exited; falling back to batch if enabled")
+            stt_active = False
+            stt_audio_queue = None
+            stt_result_queue = None
 
     async def mock_loop() -> None:
         """When MOCK_MODE: periodically send tension + occasional whisper."""
@@ -490,13 +497,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         if hasattr(session, "agent_turns"):
                             agent_task = asyncio.create_task(consume_agent_turns())
                         whisper_task = asyncio.create_task(whisper_loop())
-                        # Real-time transcript: prefer streaming Speech-to-Text when enabled.
-                        if LIVE_STT_STREAMING:
-                            stt_ctx = start_streaming_stt_thread(sample_rate_hz=16000, language_code="en-US")
-                            if stt_ctx is not None:
-                                stt_thread, stt_audio_queue, stt_result_queue = stt_ctx
-                                stt_reader_task = asyncio.create_task(stt_result_reader_loop())
-                                logger.info("Streaming Speech-to-Text enabled for live transcript")
+                        # Streaming STT started lazily on first audio to avoid "400 Audio Timeout: send close to real time".
                         if TRANSCRIPT_FALLBACK_ENABLED and stt_audio_queue is None:
                             fallback_transcript_task = asyncio.create_task(fallback_transcript_loop())
                     except Exception as e:
@@ -508,12 +509,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         session = None
                         degraded_mode = True
                         whisper_task = asyncio.create_task(whisper_loop())
-                        if LIVE_STT_STREAMING:
-                            stt_ctx = start_streaming_stt_thread(sample_rate_hz=16000, language_code="en-US")
-                            if stt_ctx is not None:
-                                stt_thread, stt_audio_queue, stt_result_queue = stt_ctx
-                                stt_reader_task = asyncio.create_task(stt_result_reader_loop())
-                                logger.info("Streaming Speech-to-Text enabled (degraded mode)")
                         if TRANSCRIPT_FALLBACK_ENABLED and stt_audio_queue is None:
                             fallback_transcript_task = asyncio.create_task(fallback_transcript_loop())
                 tension_task = asyncio.create_task(run_tension_loop())
@@ -635,6 +630,14 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 is_silence = rms_ema < SILENCE_RMS_THRESHOLD
                 barge_in_trigger = agent_output_started and rms_ema >= BARGE_IN_RMS_THRESHOLD
                 now_ts = time.time()
+                # Start streaming STT on first audio chunk so the stream gets data immediately (avoids 400 Audio Timeout).
+                if LIVE_STT_STREAMING and stt_audio_queue is None and not stt_active:
+                    stt_ctx = start_streaming_stt_thread(sample_rate_hz=16000, language_code="en-US")
+                    if stt_ctx is not None:
+                        stt_active = True
+                        stt_thread, stt_audio_queue, stt_result_queue = stt_ctx
+                        stt_reader_task = asyncio.create_task(stt_result_reader_loop())
+                        logger.info("Streaming Speech-to-Text started on first audio")
                 if stt_audio_queue is not None:
                     try:
                         stt_audio_queue.put(raw_bytes, block=False)
