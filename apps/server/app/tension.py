@@ -66,6 +66,7 @@ class TensionState:
     overlap_timestamps: deque[float] = field(default_factory=lambda: deque(maxlen=20))  # recent barge-in times for decay
     recent_rms: deque[float] = field(default_factory=lambda: deque(maxlen=30))
     max_rms_history: int = 30
+    has_had_speech: bool = False  # True once any non-silence audio is detected
 
 
 def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionState) -> int:
@@ -80,6 +81,7 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     else:
         state.silence_start = None
         state.recent_rms.append(telemetry.rms)
+        state.has_had_speech = True
     if telemetry.is_overlap:
         state.overlap_timestamps.append(telemetry.ts)
     # Only count overlaps in the last 10 seconds (time-based decay)
@@ -92,8 +94,9 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     rms_score = min(1.0, state.last_rms * 1.5) if state.recent_rms else 0.0
 
     # 2) Long silence: tension increases after >2.5s silence (awkwardness)
+    #    Only counts after speech has been detected (prevents false tension at session start)
     silence_sec = (telemetry.ts - state.silence_start) if state.silence_start else 0.0
-    silence_score = min(1.0, silence_sec / state.silence_threshold_sec) if telemetry.is_silence else 0.0
+    silence_score = min(1.0, silence_sec / state.silence_threshold_sec) if (telemetry.is_silence and state.has_had_speech) else 0.0
 
     # 3) Overlap: recent barge-ins only (decays after 10s)
     overlap_score = min(1.0, len(state.overlap_timestamps) * 0.2)

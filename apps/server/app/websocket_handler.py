@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 MOCK_MODE = os.environ.get("MOCK", "").lower() in ("1", "true", "yes")
 BARGE_IN_RMS_THRESHOLD = float(os.environ.get("BARGE_IN_RMS_THRESHOLD", "0.15"))
 RMS_EMA_ALPHA = 0.2  # rms_ema = (1-alpha)*prev + alpha*current
-SILENCE_RMS_THRESHOLD = 0.05
+SILENCE_RMS_THRESHOLD = float(os.environ.get("SILENCE_RMS_THRESHOLD", "0.02"))
 WHISPER_COOLDOWN_SEC = 12.0
 # Tension score at or above this triggers "tension_cross" whisper (env TENSION_WHISPER_THRESHOLD, default 20 for demo-friendly)
 TENSION_WHISPER_THRESHOLD = int(os.environ.get("TENSION_WHISPER_THRESHOLD", "20"))

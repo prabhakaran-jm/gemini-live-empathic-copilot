@@ -162,10 +162,12 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             return
         try:
             from google.genai import types
-            if not self._activity_started:
-                await self.start_activity()
+            # Do NOT send manual activity_start — automatic_activity_detection is
+            # enabled in the session config so the API handles VAD automatically.
+            # Sending manual activity signals with auto VAD causes the session to
+            # enter an inconsistent state and return 0 messages.
             await self._session.send_realtime_input(
-                audio=types.Blob(data=raw, mime_type="audio/pcm")
+                audio=types.Blob(data=raw, mime_type="audio/pcm;rate=16000")
             )
             self._sent_audio_chunks += 1
         except Exception as e:
@@ -173,16 +175,8 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
 
     async def stop_generation(self) -> None:
-        """Set interrupted flag; signal API to stop. New user audio will resume."""
+        """Set interrupted flag. With auto VAD enabled, no manual activity_end needed."""
         self._interrupted = True
-        try:
-            from google.genai import types
-            await self._session.send_realtime_input(
-                activity_end=types.ActivityEnd()
-            )
-            self._activity_started = False
-        except Exception:
-            pass
 
     async def start_activity(self) -> None:
         if self._closed or self._activity_started:

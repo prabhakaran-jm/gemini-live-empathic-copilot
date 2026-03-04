@@ -132,18 +132,43 @@ function startWithScriptProcessor(audioContext, source, stream, onChunk) {
 }
 
 /**
+ * List available audio input devices. Call after getUserMedia to ensure labels are populated.
+ */
+export async function listAudioDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    return devices
+      .filter((d) => d.kind === 'audioinput')
+      .map((d) => ({ deviceId: d.deviceId, label: d.label || `Mic ${d.deviceId.slice(0, 8)}` }))
+  } catch {
+    return []
+  }
+}
+
+/**
  * Start microphone capture. Returns { stop, stream }.
  * Uses AudioWorklet when available, otherwise ScriptProcessor.
+ * @param {Object} options
+ * @param {Function} options.onChunk - callback for each audio chunk
+ * @param {string} [options.deviceId] - specific audio input device ID
  */
-export async function startAudioCapture({ onChunk }) {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: true,
-      channelCount: 1,
-    },
-  })
+export async function startAudioCapture({ onChunk, deviceId }) {
+  const audioConstraints = {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: true,
+    channelCount: 1,
+  }
+  if (deviceId) {
+    audioConstraints.deviceId = { exact: deviceId }
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+  // Log which device was actually selected
+  const track = stream.getAudioTracks()[0]
+  if (track) {
+    const settings = track.getSettings()
+    console.log('[audioCapture] Using mic:', track.label, 'deviceId:', settings.deviceId?.slice(0, 12))
+  }
   const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 })
   const source = audioContext.createMediaStreamSource(stream)
 

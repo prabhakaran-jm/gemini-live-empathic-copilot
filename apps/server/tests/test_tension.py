@@ -33,9 +33,12 @@ def test_tension_high_rms_increases_score():
 
 
 def test_tension_silence_accumulates():
-    """Prolonged silence increases silence_score component."""
+    """Prolonged silence increases silence_score component (only after speech detected)."""
     state = TensionState()
     base_ts = 1000.0
+    # First: some speech so silence tracking activates
+    t_speech = AudioTelemetry(rms=0.3, is_silence=False, is_overlap=False, ts=base_ts - 1.0)
+    compute_tension_from_telemetry(t_speech, state)
     # Start silence
     t0 = AudioTelemetry(rms=0.02, is_silence=True, is_overlap=False, ts=base_ts)
     compute_tension_from_telemetry(t0, state)
@@ -43,6 +46,18 @@ def test_tension_silence_accumulates():
     t1 = AudioTelemetry(rms=0.02, is_silence=True, is_overlap=False, ts=base_ts + 3.0)
     score = compute_tension_from_telemetry(t1, state)
     assert score >= 20
+
+
+def test_tension_silence_ignored_before_speech():
+    """Silence before any speech should NOT increase tension (prevents false triggers at session start)."""
+    state = TensionState()
+    base_ts = 1000.0
+    # Only silence, no speech yet
+    t0 = AudioTelemetry(rms=0.02, is_silence=True, is_overlap=False, ts=base_ts)
+    compute_tension_from_telemetry(t0, state)
+    t1 = AudioTelemetry(rms=0.02, is_silence=True, is_overlap=False, ts=base_ts + 5.0)
+    score = compute_tension_from_telemetry(t1, state)
+    assert score == 0
 
 
 def test_tension_overlap_increases_score():

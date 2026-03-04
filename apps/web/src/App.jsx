@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from './useWebSocket'
-import { startAudioCapture } from './audioCapture'
+import { startAudioCapture, listAudioDevices } from './audioCapture'
 import { useWebcam, CAPTURE_INTERVAL_MS } from './useWebcam'
 import TensionVisualizer from './TensionVisualizer'
 import RmsLevelMeter from './RmsLevelMeter'
@@ -196,6 +196,8 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [rmsHistory, setRmsHistory] = useState([])
   const [overlayExiting, setOverlayExiting] = useState(false)
+  const [audioDevices, setAudioDevices] = useState([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const { showOverlay: showCoachingOverlay } = useCoachingOverlay(tension)
   const captureRef = useRef(null)
   const webcam = useWebcam()
@@ -261,6 +263,17 @@ export default function App() {
     useMock: import.meta.env.VITE_USE_MOCK_WS === 'true',
   })
 
+  // Enumerate audio devices on mount (need a temp getUserMedia to get labels)
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((s) => {
+        s.getTracks().forEach((t) => t.stop())
+        return listAudioDevices()
+      })
+      .then(setAudioDevices)
+      .catch(() => {})
+  }, [])
+
   // Sample RMS for sparkline (every 200ms when session active)
   useEffect(() => {
     if (!sessionActive) {
@@ -298,6 +311,7 @@ export default function App() {
     let cancelled = false
     let chunkCount = 0
     startAudioCapture({
+      deviceId: selectedDeviceId || undefined,
       onChunk: ({ pcmBase64, rms, bytesLength }) => {
         if (cancelled) return
         setLiveRms((prev) => (rms > 0 ? rms : prev * 0.95))
@@ -445,6 +459,24 @@ export default function App() {
         <div className="controls-row">
           {!sessionActive ? (
             <>
+              {!useMock && audioDevices.length > 1 && (
+                <label className="vision-toggle">
+                  <span>Mic: </span>
+                  <select
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    aria-label="Select microphone"
+                    style={{ maxWidth: 200, fontSize: '0.85rem' }}
+                  >
+                    <option value="">Default</option>
+                    {audioDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {!useMock && (
                 <label className="vision-toggle">
                   <input
