@@ -115,11 +115,19 @@ def run_streaming_stt(
 
         for response in responses:
             response_counter += 1
-            if response_counter <= 3 or response_counter % 20 == 0:
+            if response_counter <= 5 or response_counter % 20 == 0:
+                n_results = len(response.results) if response.results else 0
+                detail = ""
+                if response.results:
+                    r0 = response.results[0]
+                    n_alts = len(r0.alternatives) if r0.alternatives else 0
+                    alt0_text = r0.alternatives[0].transcript[:80] if n_alts > 0 else "(no alts)"
+                    detail = f", alts={n_alts}, is_final={r0.is_final}, text='{alt0_text}'"
                 logger.info(
-                    "STT response #%d: results=%d, chunks_sent=%d",
+                    "STT response #%d: results=%d%s, chunks_sent=%d",
                     response_counter,
-                    len(response.results) if response.results else 0,
+                    n_results,
+                    detail,
                     chunk_counter[0],
                 )
             if not response.results:
