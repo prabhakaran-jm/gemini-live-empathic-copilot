@@ -6,39 +6,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import logging
 import os
-import re
-import time
-import wave
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
-# Env vars for real client.
-# Use us-central1 for Gemini Live if receive() yields 0 messages in other regions (e.g. europe-west1).
+# Env vars for real client
 GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
-# Vertex Live API model IDs (see Vertex 2.5 Flash Live API docs):
-#   GA:  gemini-live-2.5-flash-native-audio
-#   Preview: gemini-live-2.5-flash-preview-native-audio, gemini-live-2.5-flash-preview-native-audio-09-2025
-# We use input_audio_transcription only (no output_audio_transcription) to avoid text vs audio ambiguity (cf. python-genai#1725).
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-LIVE_BACKCHANNEL = os.environ.get("LIVE_BACKCHANNEL", "1").strip().lower() in ("1", "true", "yes")
-# Default dict config for main session; typed config can be re-enabled with GEMINI_LIVE_USE_DICT_CONFIG=0.
-# This is more resilient across SDK variants for realtime transcription fields.
-GEMINI_LIVE_USE_DICT_CONFIG = os.environ.get("GEMINI_LIVE_USE_DICT_CONFIG", "1").strip().lower() in ("1", "true", "yes")
-GEMINI_LIVE_FALLBACK_REGIONS = [
-    s.strip()
-    for s in os.environ.get("GEMINI_LIVE_FALLBACK_REGIONS", "europe-west1,us-central1").split(",")
-    if s.strip()
-]
-TRANSCRIPT_FALLBACK_MODEL = os.environ.get("TRANSCRIPT_FALLBACK_MODEL", "gemini-2.0-flash")
-_TRANSCRIBE_ATTEMPT_COUNT = 0
 
 
 # --- Events yielded by recv_events() ---
@@ -46,10 +26,10 @@ _TRANSCRIBE_ATTEMPT_COUNT = 0
 @dataclass
 class LiveEvent:
     """One event from the live session."""
-    kind: str  # "transcript_delta" | "user_transcript_delta" | "backchannel_audio" | "agent_output_started" | "agent_output_stopped" | "error"
+    kind: str  # "transcript_delta" | "user_transcript_delta" | "agent_output_started" | "agent_output_stopped" | "backchannel_audio" | "error"
     text: str = ""
     message: str = ""
-    audio_base64: str = ""  # base64-encoded PCM audio (for backchannel_audio events)
+    audio_base64: str = ""  # base64-encoded PCM audio for backchannel
 
 
 # --- Config and interfaces ---
@@ -108,20 +88,10 @@ class IGeminiLiveSession(ABC):
         if False:
             yield
 
-    # Optional activity controls for realtime audio streaming/VAD nudging.
-    async def start_activity(self) -> None:
-        await asyncio.sleep(0)
-
-    async def end_activity(self) -> None:
-        await asyncio.sleep(0)
-
-    async def end_audio_stream(self) -> None:
-        await asyncio.sleep(0)
-
 
 # --- Real implementation (google-genai) ---
 
-def _make_genai_client(location: str | None = None):
+def _make_genai_client():
     """Build genai.Client from env: Vertex (ADC) or API key."""
     try:
         from google import genai
@@ -131,17 +101,16 @@ def _make_genai_client(location: str | None = None):
         ) from e
     if GOOGLE_API_KEY:
         return genai.Client(api_key=GOOGLE_API_KEY)
-    target_location = location or GOOGLE_CLOUD_REGION
     if GOOGLE_CLOUD_PROJECT:
         return genai.Client(
             vertexai=True,
             project=GOOGLE_CLOUD_PROJECT,
-            location=target_location,
+            location=GOOGLE_CLOUD_REGION,
         )
     return genai.Client(
         vertexai=True,
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
-        location=target_location,
+        location=GOOGLE_CLOUD_REGION,
     )
 
 
@@ -154,8 +123,6 @@ class RealGeminiLiveSession(IGeminiLiveSession):
         self._cm = _cm  # async context manager, for __aexit__ on close
         self._closed = False
         self._interrupted = False
-        self._activity_started = False
-        self._sent_audio_chunks = 0
         self._event_queue: asyncio.Queue[LiveEvent | None] = asyncio.Queue()
 
     async def send_audio(self, pcm_base64: str) -> None:
@@ -167,244 +134,81 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             return
         try:
             from google.genai import types
-            # Do NOT send manual activity_start — automatic_activity_detection is
-            # enabled in the session config so the API handles VAD automatically.
-            # Sending manual activity signals with auto VAD causes the session to
-            # enter an inconsistent state and return 0 messages.
             await self._session.send_realtime_input(
                 audio=types.Blob(data=raw, mime_type="audio/pcm;rate=16000")
             )
-            self._sent_audio_chunks += 1
         except Exception as e:
             logger.warning("send_realtime_input failed: %s", e)
             self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
 
     async def stop_generation(self) -> None:
-        """Set interrupted flag. With auto VAD enabled, no manual activity_end needed."""
+        """Set interrupted flag; signal API to stop. New user audio will resume."""
         self._interrupted = True
-
-    async def start_activity(self) -> None:
-        if self._closed or self._activity_started:
-            return
         try:
             from google.genai import types
-            await self._session.send_realtime_input(activity_start=types.ActivityStart())
-            self._activity_started = True
-        except Exception as e:
-            logger.debug("start_activity failed: %s", e)
-
-    async def end_activity(self) -> None:
-        if self._closed or not self._activity_started:
-            return
-        try:
-            from google.genai import types
-            await self._session.send_realtime_input(activity_end=types.ActivityEnd())
-        except Exception as e:
-            logger.debug("end_activity failed: %s", e)
-        finally:
-            self._activity_started = False
-
-    async def end_audio_stream(self) -> None:
-        if self._closed:
-            return
-        try:
-            await self._session.send_realtime_input(audio_stream_end=True)
-        except Exception as e:
-            logger.debug("end_audio_stream failed: %s", e)
-
-    def _extract_transcript_from_obj(self, obj: object, seen: set | None = None) -> list[str]:
-        """Recursively extract transcript-like strings from SDK response objects (for API variants)."""
-        if seen is None:
-            seen = set()
-        if id(obj) in seen or obj is None:
-            return []
-        seen.add(id(obj))
-        out: list[str] = []
-        if isinstance(obj, str) and obj.strip():
-            out.append(obj.strip())
-            return out
-        for name in ("text", "transcript", "content"):
-            val = getattr(obj, name, None)
-            if isinstance(val, str) and val.strip():
-                out.append(val.strip())
-        for name in ("parts", "content", "input_transcription", "input_audio_transcription"):
-            val = getattr(obj, name, None)
-            if isinstance(val, (list, tuple)):
-                for item in val:
-                    out.extend(self._extract_transcript_from_obj(item, seen))
-        return out
+            await self._session.send_realtime_input(
+                activity_end=types.ActivityEnd()
+            )
+        except Exception:
+            pass
 
     async def _receive_loop(self) -> None:
         """Consume session.receive() and push LiveEvents to _event_queue."""
-        _log_structure_once = True
-        _total_msgs = 0
-        logger.info("_receive_loop started")
         try:
             async for msg in self._session.receive():
-                _total_msgs += 1
                 if self._closed:
                     break
                 sc = getattr(msg, "server_content", None)
-                # Per-message diagnostic at INFO (throttle: first 20, then every 50th)
-                _msg_count = _total_msgs - 1
-                if _msg_count < 20 or _msg_count % 50 == 0:
-                    logger.info(
-                        "recv msg #%s: type=%s, has_server_content=%s, has_text=%s",
-                        _msg_count,
-                        type(msg).__name__,
-                        sc is not None,
-                        bool(getattr(msg, "text", None)),
-                    )
-                # Log top-level msg and server_content structure once to find where transcription lives
-                if _log_structure_once:
-                    try:
-                        msg_attrs = [a for a in dir(msg) if not a.startswith("_")]
-                        logger.info("recv msg top-level attrs: %s", msg_attrs)
-                        if sc is not None:
-                            sc_attrs = [a for a in dir(sc) if not a.startswith("_")]
-                            logger.info("server_content attrs: %s", sc_attrs)
-                        _log_structure_once = False
-                    except Exception:
-                        pass
-                emitted_this_msg = False
                 if sc is not None:
                     # --- input_audio_transcription results (native-audio models) ---
-                    # User's speech transcribed; use user_transcript_delta so recv_events() won't treat as agent output.
-                    # API may use input_transcription or input_audio_transcription.
-                    input_tx = getattr(sc, "input_transcription", None) or getattr(
-                        sc, "input_audio_transcription", None
-                    )
+                    input_tx = getattr(sc, "input_transcription", None)
                     if input_tx:
-                        # Single text field (use only if parts not present to avoid duplicate)
-                        tx_text = (
-                            getattr(input_tx, "text", None)
-                            or getattr(input_tx, "transcript", None)
-                            or (getattr(input_tx, "content", None) if isinstance(getattr(input_tx, "content", None), str) else None)
-                        )
-                        parts = getattr(input_tx, "parts", None)
-                        if parts and isinstance(parts, (list, tuple)):
-                            for part in parts:
-                                p_text = getattr(part, "text", None) or getattr(part, "content", None)
-                                if p_text:
-                                    pt = p_text if isinstance(p_text, str) else str(p_text)
-                                    logger.debug("Live transcript (part): %s", pt[:80] + "..." if len(pt) > 80 else pt)
-                                    self._event_queue.put_nowait(
-                                        LiveEvent(kind="user_transcript_delta", text=pt)
-                                    )
-                                    emitted_this_msg = True
-                        elif tx_text:
-                            ev_text = tx_text if isinstance(tx_text, str) else str(tx_text)
-                            logger.debug("Live transcript (single): %s", ev_text[:80] + "..." if len(ev_text) > 80 else ev_text)
+                        tx_text = getattr(input_tx, "text", None)
+                        if tx_text:
                             self._event_queue.put_nowait(
-                                LiveEvent(kind="user_transcript_delta", text=ev_text)
+                                LiveEvent(kind="user_transcript_delta", text=tx_text)
                             )
-                    # Fallback: try other known names for input transcription (SDK/API variants)
-                    emitted_input = bool(input_tx)
-                    for attr in ("realtime_input_transcription", "realtime_input_audio_transcription"):
-                        input_tx_alt = getattr(sc, attr, None)
-                        if input_tx_alt and input_tx_alt is not input_tx:
-                            alt_text = (
-                                getattr(input_tx_alt, "text", None)
-                                or getattr(input_tx_alt, "transcript", None)
-                                or (getattr(input_tx_alt, "content", None) if isinstance(getattr(input_tx_alt, "content", None), str) else None)
+                    # --- output_transcription (model's own speech transcribed) ---
+                    output_tx = getattr(sc, "output_transcription", None)
+                    if output_tx:
+                        out_text = getattr(output_tx, "text", None)
+                        if out_text:
+                            self._event_queue.put_nowait(
+                                LiveEvent(kind="transcript_delta", text=out_text)
                             )
-                            if alt_text:
-                                self._event_queue.put_nowait(
-                                    LiveEvent(kind="user_transcript_delta", text=alt_text if isinstance(alt_text, str) else str(alt_text))
-                                )
-                                emitted_input = True
-                                emitted_this_msg = True
-                                break
-                    # Fallback: recursively scan input-transcription-like attrs only (SDK structure may vary)
-                    if not emitted_input:
-                        for attr in (
-                            "input_transcription", "input_audio_transcription",
-                            "realtime_input_transcription", "realtime_input_audio_transcription",
-                        ):
-                            obj = getattr(sc, attr, None)
-                            if obj is None:
-                                continue
-                            for text in self._extract_transcript_from_obj(obj):
-                                if text and len(text) < 5000:  # sanity: user utterance, not huge blob
-                                    self._event_queue.put_nowait(LiveEvent(kind="user_transcript_delta", text=text))
-                                    logger.info("Live transcript (fallback): %s", text[:80] + "..." if len(text) > 80 else text)
-                                    emitted_input = True
-                                    emitted_this_msg = True
-                                    break
-                            if emitted_input:
-                                break
-                    # --- model_turn: text parts + audio (backchannel) ---
+                    # --- model_turn parts: text + audio ---
                     mt = getattr(sc, "model_turn", None)
                     if mt and getattr(mt, "parts", None):
-                        audio_chunks: list[bytes] = []
                         for part in mt.parts:
-                            # Text content (transcript)
+                            # Text parts
                             t = getattr(part, "text", None) or getattr(part, "content", None)
                             if t:
                                 self._event_queue.put_nowait(
                                     LiveEvent(kind="transcript_delta", text=t if isinstance(t, str) else str(t))
                                 )
-                            # Audio content (backchannel from native-audio model)
+                            # Audio parts (inline_data with audio)
                             inline = getattr(part, "inline_data", None)
-                            if inline is not None:
-                                data = getattr(inline, "data", None)
-                                if isinstance(data, (bytes, bytearray)):
-                                    audio_chunks.append(bytes(data))
-                        # Emit collected audio as a single backchannel event
-                        if audio_chunks and LIVE_BACKCHANNEL:
-                            raw = b"".join(audio_chunks)
-                            b64 = base64.b64encode(raw).decode("ascii")
-                            self._event_queue.put_nowait(
-                                LiveEvent(kind="backchannel_audio", audio_base64=b64)
-                            )
+                            if inline:
+                                audio_data = getattr(inline, "data", None)
+                                mime = getattr(inline, "mime_type", "")
+                                if audio_data and isinstance(audio_data, bytes):
+                                    b64 = base64.b64encode(audio_data).decode("ascii")
+                                    self._event_queue.put_nowait(
+                                        LiveEvent(kind="backchannel_audio", audio_base64=b64, text=mime)
+                                    )
                     if getattr(sc, "interrupted", None) or getattr(sc, "turn_complete", None):
                         self._event_queue.put_nowait(LiveEvent(kind="agent_output_stopped"))
-                    # Some SDK variants surface transcriptions under output_* fields.
-                    output_tx = getattr(sc, "output_transcription", None) or getattr(
-                        sc, "output_audio_transcription", None
-                    )
-                    if output_tx:
-                        output_text = (
-                            getattr(output_tx, "text", None)
-                            or getattr(output_tx, "transcript", None)
-                            or (getattr(output_tx, "content", None) if isinstance(getattr(output_tx, "content", None), str) else None)
-                        )
-                        if output_text:
-                            self._event_queue.put_nowait(
-                                LiveEvent(
-                                    kind="transcript_delta",
-                                    text=output_text if isinstance(output_text, str) else str(output_text),
-                                )
-                            )
                 # --- top-level .text shorthand ---
                 if getattr(msg, "text", None) and msg.text:
                     self._event_queue.put_nowait(
                         LiveEvent(kind="transcript_delta", text=msg.text)
                     )
-                # --- top-level transcript-like fields (transcription may live on msg, not server_content) ---
-                if not emitted_this_msg:
-                    for attr in ("input_transcription", "input_audio_transcription", "realtime_input_transcription", "realtime_input_audio_transcription"):
-                        obj = getattr(msg, attr, None)
-                        if obj is None:
-                            continue
-                        for text in self._extract_transcript_from_obj(obj):
-                            if text and len(text) < 5000:
-                                self._event_queue.put_nowait(LiveEvent(kind="user_transcript_delta", text=text))
-                                logger.info("Live transcript (top-level %s): %s", attr, text[:80] + "..." if len(text) > 80 else text)
-                                break
         except asyncio.CancelledError:
             pass
         except Exception as e:
             if not self._closed:
                 self._event_queue.put_nowait(LiveEvent(kind="error", message=str(e)))
         finally:
-            if _total_msgs == 0 and self._sent_audio_chunks > 0:
-                logger.warning(
-                    "Gemini Live returned 0 recv messages after %s audio chunks. "
-                    "Likely config/region transcription mismatch.",
-                    self._sent_audio_chunks,
-                )
-            logger.info("_receive_loop ended (received %s messages from Gemini Live)", _total_msgs)
             self._event_queue.put_nowait(None)
 
     async def recv_events(self) -> AsyncIterator[LiveEvent]:
@@ -455,422 +259,46 @@ class RealGeminiLiveClient(IGeminiLiveClient):
     """Real client: one Gemini Live session per browser WS. Uses GOOGLE_CLOUD_* or API key."""
 
     async def connect(self, config: LiveSessionConfig) -> IGeminiLiveSession:
+        client = _make_genai_client()
         model = config.model
         is_native_audio = "native-audio" in model
 
-        system_text = (
-            "You are an empathetic listening companion in a real-time conversation. "
-            "Your role is minimal backchannel feedback only. "
-            "Rules:\n"
-            "- Respond ONLY with very short acknowledgments: 'Mmhm', 'I see', 'Go on', 'Right', 'Okay', 'Yeah'.\n"
-            "- NEVER say more than 3 words at a time.\n"
-            "- NEVER give advice, opinions, questions, or commentary.\n"
-            "- NEVER repeat or paraphrase what the user said.\n"
-            "- Respond infrequently — only every 10-15 seconds of user speech, not after every sentence.\n"
-            "- Use a calm, soft, gentle tone.\n"
-            "- If unsure, stay silent. Silence is always acceptable."
-        ) if LIVE_BACKCHANNEL else (
-            "You are an invisible listening assistant. "
-            "Your ONLY job is to transcribe what the user says. "
-            "Do NOT speak, do NOT generate audio output, do NOT respond. "
-            "Stay completely silent."
-        )
-        live_config = None
         if is_native_audio:
-            dict_config = {
+            # Native-audio models REQUIRE response_modalities=["AUDIO"].
+            # We add input_audio_transcription to receive text transcripts
+            # of the user's speech, and instruct the model to stay quiet.
+            live_config = {
                 "response_modalities": ["AUDIO"],
                 "speech_config": {
                     "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
                 },
                 "input_audio_transcription": {},
-                "output_audio_transcription": {},
-                "realtime_input_config": {
-                    "automatic_activity_detection": {
-                        "disabled": False,
-                    }
-                },
-                "system_instruction": {"parts": [{"text": system_text}]},
-            }
-            if GEMINI_LIVE_USE_DICT_CONFIG:
-                live_config = dict_config
-                logger.info("Using dict config for main session (GEMINI_LIVE_USE_DICT_CONFIG=1)")
-            else:
-                # Prefer typed LiveConnectConfig so input_audio_transcription is reliably passed (dict may be lossy).
-                try:
-                    from google.genai import types
-                    kwargs = {
-                        "response_modalities": ["AUDIO"],
-                        "speech_config": types.SpeechConfig(
-                            voice_config=types.VoiceConfig(
-                                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
+                "system_instruction": {
+                    "parts": [
+                        {
+                            "text": (
+                                "You are an invisible listening assistant. "
+                                "Your ONLY job is to transcribe what the user says. "
+                                "Do NOT speak, do NOT generate audio output, do NOT respond. "
+                                "Stay completely silent."
                             )
-                        ),
-                        "system_instruction": types.Content(parts=[types.Part.from_text(text=system_text)]),
-                    }
-                    # SDK expects AudioTranscriptionConfig for input/output transcription.
-                    atc_cls = getattr(types, "AudioTranscriptionConfig", None)
-                    if atc_cls is not None:
-                        kwargs["input_audio_transcription"] = atc_cls()
-                        kwargs["output_audio_transcription"] = atc_cls()
-                    else:
-                        logger.warning(
-                            "AudioTranscriptionConfig not found in SDK; typed config may omit transcription"
-                        )
-                    aad_cls = getattr(types, "AutomaticActivityDetection", None)
-                    ric_cls = getattr(types, "RealtimeInputConfig", None)
-                    if aad_cls is not None and ric_cls is not None:
-                        kwargs["realtime_input_config"] = ric_cls(
-                            automatic_activity_detection=aad_cls(disabled=False)
-                        )
-                    else:
-                        logger.warning(
-                            "RealtimeInputConfig/AutomaticActivityDetection not found in SDK; "
-                            "typed config may rely on defaults for VAD"
-                        )
-                    live_config = types.LiveConnectConfig(**kwargs)
-                    logger.info("Using LiveConnectConfig (typed) for main session")
-                except Exception as e:
-                    logger.warning("LiveConnectConfig build failed, using dict config: %s", e)
-                    live_config = dict_config
-        if not is_native_audio:
+                        }
+                    ]
+                },
+            }
+        else:
             # Non-native models (e.g. gemini-2.0-flash-exp) support TEXT modality.
             # Do NOT include speech_config with TEXT — they are incompatible.
             live_config = {
                 "response_modalities": ["TEXT"],
             }
 
-        if GOOGLE_API_KEY:
-            locations_to_try: list[str | None] = [None]
-        else:
-            primary = GOOGLE_CLOUD_REGION or "europe-west1"
-            locations_to_try = [primary]
-            for loc in GEMINI_LIVE_FALLBACK_REGIONS:
-                if loc not in locations_to_try:
-                    locations_to_try.append(loc)
-
-        last_error: Exception | None = None
-        for idx, location in enumerate(locations_to_try):
-            try:
-                client = _make_genai_client(location=location)
-                logger.info(
-                    "Connecting to Gemini Live: model=%s, native_audio=%s, location=%s",
-                    model,
-                    is_native_audio,
-                    location or "api_key",
-                )
-                cm = client.aio.live.connect(model=model, config=live_config)
-                session = await cm.__aenter__()
-                real_session = RealGeminiLiveSession(config, session, cm)
-                asyncio.create_task(real_session._receive_loop())
-                return real_session
-            except Exception as e:
-                last_error = e
-                if idx >= len(locations_to_try) - 1:
-                    raise
-                msg = str(e)
-                retryable = (
-                    "Publisher Model" in msg
-                    or "policy violation" in msg.lower()
-                    or "1008" in msg
-                    or "not found" in msg.lower()
-                )
-                if retryable:
-                    logger.warning(
-                        "Gemini Live connect failed at location=%s, retrying next location: %s",
-                        location,
-                        e,
-                    )
-                    continue
-                raise
-        if last_error:
-            raise last_error
-        raise RuntimeError("Gemini Live connect failed with unknown error")
-
-
-async def generate_whisper_audio(text: str) -> str | None:
-    """
-    Generate a short audio whisper for the given text using a short-lived Gemini Live session.
-
-    Returns base64-encoded PCM16 mono 24 kHz audio, or None on failure.
-    """
-    # Require either explicit API key or project for ADC; otherwise, skip Live audio.
-    if not (GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT):
-        return None
-
-    try:
-        from google.genai import types
-    except Exception as e:  # pragma: no cover - import guard
-        logger.warning("generate_whisper_audio: google-genai not available: %s", e)
-        return None
-
-    model = GEMINI_MODEL
-
-    try:
-        tts_config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
-                )
-            ),
-            system_instruction=types.Content(
-                parts=[
-                    types.Part.from_text(
-                        text=(
-                            "You are a soft-spoken coach. Read the user's text aloud exactly as written, "
-                            "in a calm whispered tone. Do not add any words."
-                        )
-                    )
-                ]
-            ),
-        )
-    except Exception as e:
-        logger.warning("generate_whisper_audio: failed to build LiveConnectConfig: %s", e)
-        return None
-
-    if GOOGLE_API_KEY:
-        locations_to_try: list[str | None] = [None]
-    else:
-        primary = GOOGLE_CLOUD_REGION or "europe-west1"
-        locations_to_try = [primary]
-        for loc in GEMINI_LIVE_FALLBACK_REGIONS:
-            if loc not in locations_to_try:
-                locations_to_try.append(loc)
-
-    audio_chunks: list[bytes] = []
-    for idx, location in enumerate(locations_to_try):
-        cm = None
-        try:
-            client = _make_genai_client(location=location)
-            cm = client.aio.live.connect(model=model, config=tts_config)
-            session = await cm.__aenter__()
-            await session.send(input=text, end_of_turn=True)
-
-            async for msg in session.receive():
-                sc = getattr(msg, "server_content", None)
-                if sc is None:
-                    continue
-                mt = getattr(sc, "model_turn", None)
-                if not mt:
-                    continue
-                parts = getattr(mt, "parts", None)
-                if not parts:
-                    continue
-                for part in parts:
-                    inline = getattr(part, "inline_data", None)
-                    if inline is not None:
-                        data = getattr(inline, "data", None)
-                        if isinstance(data, (bytes, bytearray)):
-                            audio_chunks.append(bytes(data))
-            break
-        except Exception as e:
-            msg = str(e)
-            retryable = (
-                "Publisher Model" in msg
-                or "policy violation" in msg.lower()
-                or "1008" in msg
-                or "not found" in msg.lower()
-            )
-            if idx < len(locations_to_try) - 1 and retryable:
-                logger.warning(
-                    "generate_whisper_audio: location %s failed, retrying next location: %s",
-                    location,
-                    e,
-                )
-                continue
-            logger.warning("generate_whisper_audio: error during TTS session: %s", e)
-            return None
-        finally:
-            if cm is not None:
-                try:
-                    await cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
-
-    if not audio_chunks:
-        return None
-
-    raw = b"".join(audio_chunks)
-    try:
-        return base64.b64encode(raw).decode("ascii")
-    except Exception as e:
-        logger.warning("generate_whisper_audio: failed to base64-encode audio: %s", e)
-        return None
-
-
-def _pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> bytes:
-    """Wrap raw PCM16 mono bytes in a WAV container for transcription models."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # PCM16
-        wf.setframerate(sample_rate_hz)
-        wf.writeframes(pcm_bytes)
-    return buf.getvalue()
-
-
-def _normalize_pcm16_bytes(
-    pcm_bytes: bytes,
-    target_rms: float = 0.12,
-    max_gain: float = 12.0,
-) -> bytes:
-    """
-    Normalize low-level PCM16 mono audio to improve transcription robustness.
-    Returns original bytes if input is silent/invalid.
-    """
-    if not pcm_bytes or len(pcm_bytes) % 2 != 0:
-        return pcm_bytes
-    import array
-
-    samples = array.array("h")
-    samples.frombytes(pcm_bytes)
-    if not samples:
-        return pcm_bytes
-
-    # Compute RMS in normalized float domain [-1, 1].
-    sq_sum = 0.0
-    for s in samples:
-        v = s / 32768.0
-        sq_sum += v * v
-    rms = (sq_sum / len(samples)) ** 0.5
-    if rms <= 1e-6:
-        return pcm_bytes
-
-    gain = min(max_gain, target_rms / rms)
-    if gain <= 1.05:
-        return pcm_bytes
-
-    for i, s in enumerate(samples):
-        v = int(round(s * gain))
-        if v > 32767:
-            v = 32767
-        elif v < -32768:
-            v = -32768
-        samples[i] = v
-    return samples.tobytes()
-
-
-def _extract_response_text(response: object) -> str:
-    """
-    Extract text from generate_content responses across SDK variants.
-    """
-    text = getattr(response, "text", None)
-    if isinstance(text, str) and text.strip():
-        return text.strip()
-    candidates = getattr(response, "candidates", None)
-    if not isinstance(candidates, (list, tuple)):
-        return ""
-    parts_out: list[str] = []
-    for cand in candidates:
-        content = getattr(cand, "content", None)
-        parts = getattr(content, "parts", None) if content is not None else None
-        if not isinstance(parts, (list, tuple)):
-            continue
-        for part in parts:
-            ptxt = getattr(part, "text", None)
-            if isinstance(ptxt, str) and ptxt.strip():
-                parts_out.append(ptxt.strip())
-    return " ".join(parts_out).strip()
-
-
-def _sanitize_transcript_text(text: str) -> str | None:
-    out = text.strip().strip('"').strip("'")
-    if not out:
-        return None
-    lower = out.lower()
-    if lower in {"", "no speech", "no intelligible speech", "[silence]", "(silence)"}:
-        return None
-    # Filter non-content artifacts from generic models (punctuation-only, boilerplate).
-    if not any(ch.isalnum() for ch in out):
-        return None
-    if len(re.findall(r"[A-Za-z0-9]", out)) < 2:
-        return None
-    if lower.startswith(
-        (
-            "no intelligible",
-            "no speech",
-            "i can't",
-            "i cannot",
-            "i'm unable",
-            "unable to transcribe",
-        )
-    ):
-        return None
-    return out
-
-
-async def transcribe_pcm16_audio(pcm_bytes: bytes, sample_rate_hz: int = 16000) -> str | None:
-    """
-    Fallback transcription via non-Live Gemini model.
-    Returns transcript text or None when unavailable/empty.
-    """
-    if not pcm_bytes:
-        return None
-    if not (GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT):
-        return None
-    try:
-        from google import genai
-        from google.genai import types
-    except Exception as e:
-        logger.debug("transcribe_pcm16_audio: google-genai import unavailable: %s", e)
-        return None
-
-    try:
-        global _TRANSCRIBE_ATTEMPT_COUNT
-        _TRANSCRIBE_ATTEMPT_COUNT += 1
-        should_log = _TRANSCRIBE_ATTEMPT_COUNT <= 3 or (_TRANSCRIBE_ATTEMPT_COUNT % 20 == 0)
-
-        client = _make_genai_client()
-        pcm_norm = _normalize_pcm16_bytes(pcm_bytes)
-        wav_bytes = _pcm16_to_wav_bytes(pcm_norm, sample_rate_hz=sample_rate_hz)
-        prompt = (
-            "Transcribe the spoken words from this audio. "
-            "Return only the transcript text, no labels or commentary. "
-            "If there is no clear speech or only silence/noise, return exactly: [no speech]. "
-            "Do not return only punctuation (e.g. a single period)."
-        )
-        contents = [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(text=prompt),
-                    types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-                ],
-            )
-        ]
-        response = await client.aio.models.generate_content(
-            model=TRANSCRIPT_FALLBACK_MODEL,
-            contents=contents,
-            config=genai.types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=256,
-            ),
-        )
-        text = _extract_response_text(response)
-        out = _sanitize_transcript_text(text) if text else None
-        if out:
-            return out
-        # If sanitization filtered it out but the model returned meaningful text,
-        # use the raw text so the UI has a transcript. Reject punctuation-only (e.g. ".").
-        if text and isinstance(text, str):
-            raw = text.strip().strip('"').strip("'").strip()
-            if raw and raw.lower() != "[no speech]" and len(re.findall(r"[A-Za-z0-9]", raw)) >= 2:
-                if should_log:
-                    logger.info(
-                        "Fallback transcription using raw text (sanitizer rejected): %s",
-                        raw[:120],
-                    )
-                return raw
-        if should_log:
-            logger.info(
-                "Fallback transcription returned no usable text (model=%s, bytes=%s)",
-                TRANSCRIPT_FALLBACK_MODEL,
-                len(pcm_bytes),
-            )
-        return None
-    except Exception as e:
-        logger.debug("transcribe_pcm16_audio failed: %s", e)
-        return None
+        logger.info("Connecting to Gemini Live: model=%s, native_audio=%s", model, is_native_audio)
+        cm = client.aio.live.connect(model=model, config=live_config)
+        session = await cm.__aenter__()
+        real_session = RealGeminiLiveSession(config, session, cm)
+        asyncio.create_task(real_session._receive_loop())
+        return real_session
 
 
 # --- Stub implementation ---

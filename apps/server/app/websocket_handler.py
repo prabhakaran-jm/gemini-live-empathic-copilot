@@ -125,9 +125,15 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     websocket,
                     {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
                 )
+            elif ev.kind == "backchannel_audio" and ev.audio_base64:
+                # Forward model's audio backchannel to browser for playback
+                await send_json(
+                    websocket,
+                    {"type": "backchannel_audio", "base64": ev.audio_base64, "mime": ev.text, "ts": int(time.time() * 1000)},
+                )
             elif ev.kind == "transcript_delta" and ev.text:
-                # Model backchannel speech ("Okay", "Mmhm") — log but don't show in transcript
-                logger.debug("Agent backchannel: %s", ev.text[:80])
+                # Model backchannel text — log but don't show in transcript
+                logger.debug("Agent backchannel text: %s", ev.text[:80])
             elif ev.kind == "error":
                 await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
 
