@@ -353,7 +353,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     now - last_speech_ts >= BACKCHANNEL_PAUSE_SEC
                     and now - last_backchannel_ts >= BACKCHANNEL_COOLDOWN_SEC
                     and now - last_model_backchannel_ts >= 2.0
-                    and now - last_whisper_ts >= 2.0
+                    and now - last_whisper_ts >= 8.0
                 ):
                     backchannel_armed = False
                     last_backchannel_ts = now

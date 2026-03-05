@@ -48,12 +48,13 @@ function speakWhisper(text) {
   try {
     window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.85
-    utterance.pitch = 0.9
-    utterance.volume = 0.20
+    utterance.rate = 0.75
+    utterance.pitch = 0.6
+    utterance.volume = 0.15
     const voices = window.speechSynthesis.getVoices()
+    // Prefer voices that sound softer/breathier for a whisper effect
     const preferred = voices.find(v =>
-      v.name.includes('Samantha') || v.name.includes('Google UK English Female')
+      v.name.includes('Samantha') || v.name.includes('Karen') || v.name.includes('Google UK English Female')
     )
     if (preferred) utterance.voice = preferred
     window.speechSynthesis.speak(utterance)
