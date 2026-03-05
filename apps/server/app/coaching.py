@@ -171,12 +171,66 @@ def _get_tts_client():
         return None
 
 
+def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
+    """
+    Post-process PCM16 audio to sound like real whispering.
+
+    Real whispers differ from normal speech in three key ways:
+    1. Breathy/airy — turbulent airflow noise mixed with voice
+    2. No strong vocal harmonics — smoothed signal (low-pass effect)
+    3. Quieter overall amplitude
+
+    This applies:
+    - 40% amplitude reduction (voice becomes quieter)
+    - Simple low-pass smoothing (reduces sharp harmonics)
+    - Light breath noise mixed in (adds airy/breathy quality)
+    """
+    import random
+    import struct
+
+    num_samples = len(pcm_bytes) // 2
+    if num_samples < 2:
+        return pcm_bytes
+
+    # Unpack PCM16 samples
+    samples = list(struct.unpack(f"<{num_samples}h", pcm_bytes))
+
+    # Seed for reproducible noise
+    rng = random.Random(42)
+
+    # Pass 1: Simple low-pass smoothing (averages adjacent samples to soften harmonics)
+    smoothed = [samples[0]]
+    for i in range(1, num_samples):
+        # Weighted average: 40% previous + 60% current — gentle smoothing
+        s = int(0.4 * smoothed[i - 1] + 0.6 * samples[i])
+        smoothed.append(s)
+
+    # Pass 2: Reduce amplitude + mix in breath noise
+    VOICE_GAIN = 0.35  # 35% of original voice amplitude
+    NOISE_GAIN = 800   # Breath noise amplitude (out of 32768)
+
+    result = []
+    for s in smoothed:
+        # Scale down the voice
+        voice = int(s * VOICE_GAIN)
+        # Add breathy noise (shaped by voice envelope for natural feel)
+        # Noise is louder when voice is active, quieter during silence
+        envelope = min(1.0, abs(s) / 8000.0)  # 0.0 in silence, 1.0 when speaking
+        noise = int(rng.gauss(0, NOISE_GAIN) * (0.3 + 0.7 * envelope))
+        mixed = voice + noise
+        # Clamp to int16 range
+        mixed = max(-32768, min(32767, mixed))
+        result.append(mixed)
+
+    return struct.pack(f"<{num_samples}h", *result)
+
+
 async def generate_whisper_audio(text: str) -> str | None:
     """
-    Generate whisper-quality audio from coaching text using Google Cloud TTS.
-    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
+    Generate whisper-quality audio from coaching text using Google Cloud TTS
+    + post-processing for a breathy, airy whisper effect.
 
-    Uses SSML with soft prosody + a Neural2 voice for a natural, gentle whisper.
+    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
     The frontend plays this via playWhisperAudio() at gain 0.12.
     """
     if not COACHING_LIVE_AUDIO:
@@ -187,10 +241,10 @@ async def generate_whisper_audio(text: str) -> str | None:
     try:
         from google.cloud import texttospeech_v1 as texttospeech
 
-        # SSML with whisper-like prosody: slow, soft, low pitch
+        # SSML with soft prosody: slow, quiet
         ssml = (
             '<speak>'
-            '<prosody rate="slow" pitch="-2st" volume="x-soft">'
+            '<prosody rate="slow" pitch="-1st" volume="x-soft">'
             f'{text}'
             '</prosody>'
             '</speak>'
@@ -205,9 +259,8 @@ async def generate_whisper_audio(text: str) -> str | None:
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
                 sample_rate_hertz=24000,  # Matches playWhisperAudio() on frontend
-                speaking_rate=0.85,
-                pitch=-3.0,  # Lower pitch for whispery feel
-                volume_gain_db=-2.0,  # Slightly quieter
+                speaking_rate=0.9,
+                pitch=-2.0,
             ),
         )
 
@@ -218,8 +271,11 @@ async def generate_whisper_audio(text: str) -> str | None:
         if len(audio_bytes) > 44 and audio_bytes[:4] == b'RIFF':
             audio_bytes = audio_bytes[44:]
 
+        # Apply whisper post-processing: smoothing + breath noise + amplitude reduction
+        audio_bytes = _apply_whisper_effect(audio_bytes)
+
         b64 = base64.b64encode(audio_bytes).decode("ascii")
-        logger.info("TTS whisper audio generated: %d bytes PCM16 24kHz", len(audio_bytes))
+        logger.info("TTS whisper audio generated+processed: %d bytes PCM16 24kHz", len(audio_bytes))
         return b64
     except Exception as e:
         logger.warning("TTS whisper audio generation failed (will use browser TTS fallback): %s", e)

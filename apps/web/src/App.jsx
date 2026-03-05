@@ -133,7 +133,7 @@ function playWhisperAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.12
+    gain.gain.value = 0.45  // Higher gain since whisper post-processing reduces amplitude
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {

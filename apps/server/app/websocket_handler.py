@@ -252,17 +252,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
                 )
             elif ev.kind == "backchannel_audio" and ev.audio_base64:
-                now_bc = time.time()
-                last_model_backchannel_ts = now_bc
-                # Suppress backchannel audio near whispers to avoid murmuring before/after coaching
-                if now_bc - last_whisper_ts < 8.0:
-                    logger.debug("Suppressed backchannel_audio: too close to whisper (%.1fs)", now_bc - last_whisper_ts)
-                    continue
-                # Forward backchannel audio (Ok, mhmm) to browser — a key feature
-                await send_json(
-                    websocket,
-                    {"type": "backchannel_audio", "audio_base64": ev.audio_base64, "ts": int(now_bc * 1000)},
-                )
+                last_model_backchannel_ts = time.time()
+                # Suppress ALL model-generated audio. The native-audio model ignores
+                # the "stay silent" system instruction and generates unwanted audio
+                # (murmuring) that interferes with coaching whispers and causes
+                # session crashes/reconnects. Whisper audio comes from Cloud TTS instead.
+                logger.debug("Suppressed backchannel_audio from model (%d bytes)", len(ev.audio_base64))
             elif ev.kind == "transcript_delta" and ev.text:
                 # Model backchannel text — log but don't show in transcript
                 logger.debug("Agent backchannel text: %s", ev.text[:80])
