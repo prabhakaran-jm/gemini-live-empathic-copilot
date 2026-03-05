@@ -72,6 +72,10 @@ class IGeminiLiveSession(ABC):
         """Barge-in: stop current agent output. Next send_audio continues."""
         ...
 
+    async def send_text(self, text: str) -> None:
+        """Send a text message to the model (for coaching whisper injection)."""
+        pass  # default no-op; real session overrides
+
     @abstractmethod
     async def recv_events(self) -> AsyncIterator[LiveEvent]:
         """Async iterator of events: transcript_delta, agent_output_started/stopped, error."""
@@ -151,6 +155,22 @@ class RealGeminiLiveSession(IGeminiLiveSession):
             )
         except Exception:
             pass
+
+    async def send_text(self, text: str) -> None:
+        """Send a text message to the Live model to generate audio output (for coaching whisper)."""
+        if self._closed:
+            return
+        try:
+            from google.genai import types
+            await self._session.send_client_content(
+                turns=types.Content(
+                    role="user",
+                    parts=[types.Part(text=text)],
+                ),
+                turn_complete=True,
+            )
+        except Exception as e:
+            logger.warning("send_text failed: %s", e)
 
     async def _receive_loop(self) -> None:
         """Consume session.receive() and push LiveEvents to _event_queue."""

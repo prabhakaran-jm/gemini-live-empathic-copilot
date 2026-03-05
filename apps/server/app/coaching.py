@@ -144,3 +144,8 @@ def get_move_by_id(move_id: str) -> dict[str, str] | None:
         if m["move"] == move_id:
             return m
     return None
+
+
+# --- Whisper audio via Gemini Live native audio ---
+
+COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "0").strip().lower() in ("1", "true", "yes")
