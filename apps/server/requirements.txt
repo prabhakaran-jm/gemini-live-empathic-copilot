@@ -7,6 +7,8 @@ websockets>=14.0
 google-genai>=1.50.0
 # Real-time transcription when Gemini Live does not emit input_audio_transcription (LIVE_STT_STREAMING=1).
 google-cloud-speech>=2.24.0
+# Text-to-Speech for natural whisper audio (COACHING_LIVE_AUDIO=1). Much better than browser Web Speech API.
+google-cloud-texttospeech>=2.16.0
 
 # Tests
 pytest>=8.0.0

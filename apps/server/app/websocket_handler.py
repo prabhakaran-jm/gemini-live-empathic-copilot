@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
+from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching, generate_whisper_audio
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
@@ -470,12 +470,22 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         last_whisper=last_whisper_text,
                     )
                     last_whisper_text = coaching_result["text"]
-                    logger.info("Whisper sending: move=%s, text=%s, semantic_pressure=%.2f",
-                                coaching_result["move"], coaching_result["text"][:80], semantic_pressure)
-                    await send_json(
-                        websocket,
-                        {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
-                    )
+                    # Generate TTS whisper audio (returns None if disabled or fails)
+                    audio_b64 = await generate_whisper_audio(coaching_result["text"])
+                    whisper_msg: dict[str, Any] = {
+                        "type": "whisper",
+                        "text": coaching_result["text"],
+                        "move": coaching_result["move"],
+                        "ts": int(now * 1000),
+                    }
+                    if audio_b64:
+                        whisper_msg["audio_base64"] = audio_b64
+                        logger.info("Whisper sending with TTS audio: move=%s, text=%s, semantic_pressure=%.2f",
+                                    coaching_result["move"], coaching_result["text"][:80], semantic_pressure)
+                    else:
+                        logger.info("Whisper sending (text-only, browser TTS): move=%s, text=%s, semantic_pressure=%.2f",
+                                    coaching_result["move"], coaching_result["text"][:80], semantic_pressure)
+                    await send_json(websocket, whisper_msg)
                 except Exception as e:
                     logger.exception("Whisper generation/send failed: %s", e)
 

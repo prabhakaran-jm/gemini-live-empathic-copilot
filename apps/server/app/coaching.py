@@ -3,6 +3,7 @@ Coaching moves: deterministic triggers + Gemini-generated contextual whispers.
 Falls back to fixed 8-12 word phrases if generation fails.
 Grounded in Nonviolent Communication (NVC) and active listening principles.
 """
+import base64
 import logging
 import os
 
@@ -146,6 +147,80 @@ def get_move_by_id(move_id: str) -> dict[str, str] | None:
     return None
 
 
-# --- Whisper audio via Gemini Live native audio ---
+# --- Whisper audio via Google Cloud Text-to-Speech ---
 
 COACHING_LIVE_AUDIO = os.environ.get("COACHING_LIVE_AUDIO", "0").strip().lower() in ("1", "true", "yes")
+
+_tts_client = None
+
+
+def _get_tts_client():
+    """Build a Google Cloud TTS client (lazy singleton)."""
+    global _tts_client
+    if _tts_client is not None:
+        return _tts_client
+    try:
+        from google.cloud import texttospeech_v1 as texttospeech
+        _tts_client = texttospeech.TextToSpeechAsyncClient()
+        return _tts_client
+    except ImportError:
+        logger.warning("google-cloud-texttospeech not installed; whisper audio disabled")
+        return None
+    except Exception as e:
+        logger.warning("TTS client init failed: %s", e)
+        return None
+
+
+async def generate_whisper_audio(text: str) -> str | None:
+    """
+    Generate whisper-quality audio from coaching text using Google Cloud TTS.
+    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
+
+    Uses SSML with soft prosody + a Neural2 voice for a natural, gentle whisper.
+    The frontend plays this via playWhisperAudio() at gain 0.12.
+    """
+    if not COACHING_LIVE_AUDIO:
+        return None
+    client = _get_tts_client()
+    if client is None:
+        return None
+    try:
+        from google.cloud import texttospeech_v1 as texttospeech
+
+        # SSML with whisper-like prosody: slow, soft, low pitch
+        ssml = (
+            '<speak>'
+            '<prosody rate="slow" pitch="-2st" volume="x-soft">'
+            f'{text}'
+            '</prosody>'
+            '</speak>'
+        )
+
+        request = texttospeech.SynthesizeSpeechRequest(
+            input=texttospeech.SynthesisInput(ssml=ssml),
+            voice=texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Neural2-F",  # Soft female neural voice
+            ),
+            audio_config=texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+                sample_rate_hertz=24000,  # Matches playWhisperAudio() on frontend
+                speaking_rate=0.85,
+                pitch=-3.0,  # Lower pitch for whispery feel
+                volume_gain_db=-2.0,  # Slightly quieter
+            ),
+        )
+
+        response = await client.synthesize_speech(request=request)
+        audio_bytes = response.audio_content
+
+        # Cloud TTS LINEAR16 includes a 44-byte WAV header; strip it for raw PCM
+        if len(audio_bytes) > 44 and audio_bytes[:4] == b'RIFF':
+            audio_bytes = audio_bytes[44:]
+
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+        logger.info("TTS whisper audio generated: %d bytes PCM16 24kHz", len(audio_bytes))
+        return b64
+    except Exception as e:
+        logger.warning("TTS whisper audio generation failed (will use browser TTS fallback): %s", e)
+        return None
