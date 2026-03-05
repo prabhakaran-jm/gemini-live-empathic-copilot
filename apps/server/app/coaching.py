@@ -310,7 +310,8 @@ async def _generate_whisper_audio_live(text: str) -> str | None:
             # Collect audio chunks with a timeout
             audio_chunks: list[bytes] = []
             try:
-                async for msg in asyncio.wait_for(session.receive(), timeout=8.0):
+                deadline = asyncio.get_event_loop().time() + 8.0
+                async for msg in session.receive():
                     # Collect audio from model_turn parts
                     if hasattr(msg, "server_content") and msg.server_content:
                         sc = msg.server_content
@@ -321,6 +322,10 @@ async def _generate_whisper_audio_live(text: str) -> str | None:
                         # Stop when turn is complete
                         if hasattr(sc, "turn_complete") and sc.turn_complete:
                             break
+                    # Manual timeout check
+                    if asyncio.get_event_loop().time() > deadline:
+                        logger.warning("Gemini Live TTS timed out after 8s")
+                        break
             except (asyncio.TimeoutError, StopAsyncIteration):
                 pass
 
@@ -361,7 +366,7 @@ async def _generate_whisper_audio_cloud_tts(text: str) -> str | None:
 
         ssml = (
             '<speak>'
-            '<prosody rate="85%" pitch="-2st" volume="x-soft">'
+            '<prosody rate="85%" volume="x-soft">'
             f'{safe_text}'
             '</prosody>'
             '</speak>'
@@ -441,7 +446,7 @@ async def generate_backchannel_audio(text: str) -> str | None:
         safe_text = _html.escape(text)
         ssml = (
             '<speak>'
-            '<prosody rate="85%" pitch="-2st" volume="x-soft">'
+            '<prosody rate="85%" volume="x-soft">'
             f'{safe_text}'
             '</prosody>'
             '</speak>'
