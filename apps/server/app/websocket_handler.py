@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.coaching import COACHING_MOVES, COACHING_LIVE_AUDIO, get_move_by_id, generate_coaching
+from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
@@ -112,9 +112,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
     last_model_backchannel_ts: float = 0.0
     audio_replay_buffer: list[str] = []  # Audio chunks buffered during reconnect
     MAX_REPLAY_CHUNKS = 50  # ~2 seconds of audio at 25 chunks/sec
-    whisper_audio_pending: bool = False  # True when waiting for Live model to generate whisper audio
-    whisper_audio_chunks: list[str] = []  # Collect audio chunks from Live model for whisper
-    whisper_audio_text: str = ""  # The coaching text being spoken
     # STT state
     stt_thread: Any = None
     stt_audio_queue: Any = None
@@ -168,10 +165,19 @@ async def handle_websocket(websocket: WebSocket) -> None:
             send_json(websocket, {"type": "tension", "score": score, "ts": int(now * 1000)})
         )
 
-    def update_semantic_state(text: str) -> None:
-        """Update semantic pressure/style from user transcript text."""
+    def update_semantic_state(_unused: str = "") -> None:
+        """Update semantic pressure/style by scanning the full transcript_context.
+
+        Always scans the full recent transcript (last 500 chars) for markers,
+        not just deltas. This ensures multi-word markers like 'you always' and
+        'never listen' are detected even when words arrive across multiple STT
+        interim updates.
+        """
         nonlocal semantic_pressure, conversation_style, pending_style_whisper
-        lower = text.lower()
+        # Scan the full recent transcript context for markers
+        lower = transcript_context[-500:].lower() if transcript_context else ""
+        if not lower:
+            return
         escalation_hits = sum(1 for m in ESCALATION_MARKERS if m in lower)
         calming_hits = sum(1 for m in CALMING_MARKERS if m in lower)
         new_style = conversation_style
@@ -224,7 +230,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
     async def _consume_one_session() -> None:
         """Drain recv_events from the current session until it ends."""
         nonlocal agent_output_started, transcript_context, last_model_backchannel_ts
-        nonlocal whisper_audio_pending, whisper_audio_chunks, whisper_audio_text
         if session is None or not hasattr(session, "recv_events"):
             return
         async for ev in session.recv_events():
@@ -234,27 +239,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 agent_output_started = True
             elif ev.kind == "agent_output_stopped":
                 agent_output_started = False
-                # If we were collecting whisper audio, send it now (turn complete)
-                if whisper_audio_pending and whisper_audio_chunks:
-                    import base64 as b64mod
-                    combined = b""
-                    for chunk_b64 in whisper_audio_chunks:
-                        combined += b64mod.b64decode(chunk_b64)
-                    full_b64 = b64mod.b64encode(combined).decode("ascii")
-                    logger.info("Whisper audio collected: %d bytes from %d chunks", len(combined), len(whisper_audio_chunks))
-                    await send_json(
-                        websocket,
-                        {
-                            "type": "whisper",
-                            "text": whisper_audio_text,
-                            "move": "coaching_audio",
-                            "audio_base64": full_b64,
-                            "ts": int(time.time() * 1000),
-                        },
-                    )
-                    whisper_audio_chunks.clear()
-                    whisper_audio_text = ""
-                whisper_audio_pending = False
             elif ev.kind == "user_transcript_delta" and ev.text:
                 # Keep one transcript source at a time: when STT is active, suppress
                 # Gemini user transcript deltas to avoid duplicate UI text.
@@ -262,7 +246,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     continue
                 transcript_buffer.append(ev.text)
                 transcript_context = (transcript_context + " " + ev.text).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-                update_semantic_state(ev.text)
+                update_semantic_state()
                 await send_json(
                     websocket,
                     {"type": "transcript", "delta": ev.text, "ts": int(time.time() * 1000)},
@@ -270,10 +254,6 @@ async def handle_websocket(websocket: WebSocket) -> None:
             elif ev.kind == "backchannel_audio" and ev.audio_base64:
                 now_bc = time.time()
                 last_model_backchannel_ts = now_bc
-                # When collecting whisper audio, route model audio to whisper buffer
-                if whisper_audio_pending:
-                    whisper_audio_chunks.append(ev.audio_base64)
-                    continue
                 # Suppress backchannel audio near whispers to avoid murmuring before/after coaching
                 if now_bc - last_whisper_ts < 8.0:
                     logger.debug("Suppressed backchannel_audio: too close to whisper (%.1fs)", now_bc - last_whisper_ts)
@@ -285,10 +265,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 )
             elif ev.kind == "transcript_delta" and ev.text:
                 # Model backchannel text — log but don't show in transcript
-                if whisper_audio_pending:
-                    logger.debug("Whisper transcript: %s", ev.text[:80])
-                else:
-                    logger.debug("Agent backchannel text: %s", ev.text[:80])
+                logger.debug("Agent backchannel text: %s", ev.text[:80])
             elif ev.kind == "error":
                 await send_json(websocket, {"type": "error", "message": ev.message or ev.text})
 
@@ -366,7 +343,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     if delta:
                         transcript_context = (transcript_context + " " + delta).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
                         transcript_buffer.append(delta)
-                        update_semantic_state(delta)
+                        update_semantic_state()
                         await send_json(
                             websocket,
                             {"type": "transcript", "delta": delta + " ", "ts": int(time.time() * 1000)},
@@ -374,15 +351,19 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     else:
                         # Final matches what we already showed — still update context
                         transcript_context = (transcript_context + " " + t).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
-                        update_semantic_state(t)
+                        update_semantic_state()
                 else:
-                    # Interim: send only new characters beyond what we've already shown
+                    # Interim: Google STT interims are cumulative and may revise.
+                    # When interim shrinks (revision), reset shown_interim_len.
+                    if len(t) < shown_interim_len:
+                        # STT revised its hypothesis — reset tracking
+                        shown_interim_len = 0
                     if len(t) > shown_interim_len:
                         delta = t[shown_interim_len:]
                         shown_interim_len = len(t)
                         transcript_context = (transcript_context + " " + delta).strip()[-TRANSCRIPT_CONTEXT_MAX_CHARS:]
                         transcript_buffer.append(delta)
-                        update_semantic_state(delta)
+                        update_semantic_state()
                         await send_json(
                             websocket,
                             {"type": "transcript", "delta": delta, "ts": int(time.time() * 1000)},
@@ -489,34 +470,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         last_whisper=last_whisper_text,
                     )
                     last_whisper_text = coaching_result["text"]
-                    # If COACHING_LIVE_AUDIO is enabled and session supports it,
-                    # inject text into Gemini Live to generate natural whisper audio.
-                    # The audio will be collected in _consume_one_session and sent as
-                    # a whisper message with audio_base64.
-                    if COACHING_LIVE_AUDIO and session is not None and hasattr(session, 'send_text'):
-                        whisper_audio_pending = True
-                        whisper_audio_text = coaching_result["text"]
-                        whisper_audio_chunks.clear()
-                        prompt = (
-                            f'Whisper this coaching phrase gently and softly, '
-                            f'as if you are a quiet voice in someone\'s ear: '
-                            f'"{coaching_result["text"]}"'
-                        )
-                        await session.send_text(prompt)
-                        logger.info("Whisper injected into Live session: move=%s, text=%s", coaching_result["move"], coaching_result["text"][:80])
-                        # Text-only fallback is sent immediately so UI shows it right away;
-                        # audio will arrive via _consume_one_session as a second whisper msg.
-                        await send_json(
-                            websocket,
-                            {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
-                        )
-                    else:
-                        # No Live audio available — text-only whisper (browser TTS fallback)
-                        logger.info("Whisper sending (text-only): move=%s, text=%s", coaching_result["move"], coaching_result["text"][:80])
-                        await send_json(
-                            websocket,
-                            {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
-                        )
+                    logger.info("Whisper sending: move=%s, text=%s, semantic_pressure=%.2f",
+                                coaching_result["move"], coaching_result["text"][:80], semantic_pressure)
+                    await send_json(
+                        websocket,
+                        {"type": "whisper", "text": coaching_result["text"], "move": coaching_result["move"], "ts": int(now * 1000)},
+                    )
                 except Exception as e:
                     logger.exception("Whisper generation/send failed: %s", e)
 
