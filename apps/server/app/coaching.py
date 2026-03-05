@@ -299,11 +299,10 @@ async def generate_whisper_audio(text: str) -> str | None:
 
 async def generate_backchannel_audio(text: str) -> str | None:
     """
-    Generate short backchannel audio ("Ok.", "Mm-hmm.", "I see.") using
-    Google Cloud TTS. Returns base64-encoded PCM16 24kHz mono audio.
+    Generate short backchannel audio ("Ok.", "I see.") using Google Cloud TTS
+    with the same whisper voice persona and post-processing as coaching whispers.
 
-    Uses natural speaking voice (no whisper effect) at moderate volume so
-    it sounds like a conversational acknowledgement.
+    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
     """
     client = _get_tts_client()
     if client is None:
@@ -311,17 +310,26 @@ async def generate_backchannel_audio(text: str) -> str | None:
     try:
         from google.cloud import texttospeech_v1 as texttospeech
 
+        # Same SSML whisper prosody as generate_whisper_audio()
+        ssml = (
+            '<speak>'
+            '<prosody rate="slow" pitch="-1st" volume="x-soft">'
+            f'{text}'
+            '</prosody>'
+            '</speak>'
+        )
+
         request = texttospeech.SynthesizeSpeechRequest(
-            input=texttospeech.SynthesisInput(text=text),
+            input=texttospeech.SynthesisInput(ssml=ssml),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Neural2-F",  # Same voice as whisper for consistency
+                name="en-US-Neural2-F",  # Same voice as whisper
             ),
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
                 sample_rate_hertz=24000,
-                speaking_rate=1.0,
-                pitch=-1.0,  # Slightly lower pitch for warmth
+                speaking_rate=0.9,
+                pitch=-2.0,  # Same as whisper
             ),
         )
 
@@ -331,6 +339,9 @@ async def generate_backchannel_audio(text: str) -> str | None:
         # Strip WAV header if present
         if len(audio_bytes) > 44 and audio_bytes[:4] == b'RIFF':
             audio_bytes = audio_bytes[44:]
+
+        # Apply same whisper post-processing (smoothing + amplitude reduction)
+        audio_bytes = _apply_whisper_effect(audio_bytes)
 
         b64 = base64.b64encode(audio_bytes).decode("ascii")
         logger.info("TTS backchannel audio generated: %d bytes PCM16 24kHz, text=%s", len(audio_bytes), text)

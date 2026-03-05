@@ -47,7 +47,7 @@ STYLE_WHISPER_COOLDOWN_SEC = float(os.environ.get("STYLE_WHISPER_COOLDOWN_SEC", 
 BACKCHANNEL_PAUSE_SEC = float(os.environ.get("BACKCHANNEL_PAUSE_SEC", "1.0"))
 BACKCHANNEL_COOLDOWN_SEC = float(os.environ.get("BACKCHANNEL_COOLDOWN_SEC", "4.0"))
 BACKCHANNEL_SPEECH_RMS_THRESHOLD = float(os.environ.get("BACKCHANNEL_SPEECH_RMS_THRESHOLD", "0.02"))
-BACKCHANNEL_TEXT_OPTIONS: tuple[str, ...] = ("Ok.", "Mm-hmm.", "I see.")
+BACKCHANNEL_TEXT_OPTIONS: tuple[str, ...] = ("Ok.", "I see.")
 
 STYLE_WHISPERS: dict[str, str] = {
     "normal": "You sound calm and clear. Keep this steady pace.",
