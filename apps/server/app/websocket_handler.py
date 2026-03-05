@@ -254,22 +254,12 @@ async def handle_websocket(websocket: WebSocket) -> None:
                 )
             elif ev.kind == "backchannel_audio" and ev.audio_base64:
                 last_model_backchannel_ts = time.time()
-                now_bc = time.time()
-                # Selective backchannel: only forward when speech was recent (someone
-                # is actively talking) AND no whisper happened in the last 8 seconds.
-                # This prevents random murmuring during silence while preserving
-                # natural "mm-hmm" responses during active conversation.
-                speech_recent = (now_bc - last_speech_ts) < 4.0
-                whisper_recent = (now_bc - last_whisper_ts) < 8.0
-                if speech_recent and not whisper_recent:
-                    logger.info("Forwarding backchannel_audio (%d bytes)", len(ev.audio_base64))
-                    await send_json(
-                        websocket,
-                        {"type": "backchannel_audio", "audio_base64": ev.audio_base64},
-                    )
-                else:
-                    reason = "whisper_recent" if whisper_recent else "no_recent_speech"
-                    logger.debug("Suppressed backchannel_audio (%s, %d bytes)", reason, len(ev.audio_base64))
+                # Suppress ALL model backchannel audio. The native-audio model
+                # generates unwanted audio that destabilises the Live session —
+                # every burst of forwarded backchannel audio correlates with an
+                # immediate session crash/reconnect (observed reconnects 6-9).
+                # Backchannel text ("I see.", "Mm-hmm") is still logged below.
+                logger.debug("Suppressed backchannel_audio (%d bytes)", len(ev.audio_base64))
             elif ev.kind == "transcript_delta" and ev.text:
                 # Model backchannel text — log but don't show in transcript
                 logger.debug("Agent backchannel text: %s", ev.text[:80])

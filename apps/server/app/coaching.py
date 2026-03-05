@@ -203,19 +203,15 @@ def _get_tts_client():
 
 def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
     """
-    Post-process PCM16 audio to sound like real whispering.
+    Post-process PCM16 audio to sound like a soft whisper.
 
-    Real whispers differ from normal speech in three key ways:
-    1. Breathy/airy — turbulent airflow noise mixed with voice
-    2. No strong vocal harmonics — smoothed signal (low-pass effect)
-    3. Quieter overall amplitude
+    Applies only:
+    - Low-pass smoothing (reduces sharp harmonics for softer tone)
+    - Gentle amplitude reduction (quieter, intimate feel)
 
-    This applies:
-    - Moderate amplitude reduction (voice becomes softer but still clear)
-    - Simple low-pass smoothing (reduces sharp harmonics)
-    - Very light breath noise mixed in (subtle airy quality, not overpowering)
+    No synthetic noise is added — previous breath noise caused audible
+    background static that users found distracting.
     """
-    import random
     import struct
 
     num_samples = len(pcm_bytes) // 2
@@ -225,32 +221,21 @@ def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
     # Unpack PCM16 samples
     samples = list(struct.unpack(f"<{num_samples}h", pcm_bytes))
 
-    # Seed for reproducible noise
-    rng = random.Random(42)
-
-    # Pass 1: Simple low-pass smoothing (averages adjacent samples to soften harmonics)
+    # Pass 1: Low-pass smoothing (averages adjacent samples to soften harmonics)
     smoothed = [samples[0]]
     for i in range(1, num_samples):
         # Weighted average: 40% previous + 60% current — gentle smoothing
         s = int(0.4 * smoothed[i - 1] + 0.6 * samples[i])
         smoothed.append(s)
 
-    # Pass 2: Reduce amplitude + mix in very light breath noise
-    VOICE_GAIN = 0.55  # 55% of original voice amplitude — clear but soft
-    NOISE_GAIN = 200   # Very light breath noise (out of 32768) — subtle airiness
+    # Pass 2: Reduce amplitude for soft whisper feel
+    VOICE_GAIN = 0.50  # 50% of original amplitude — soft but clearly audible
 
     result = []
     for s in smoothed:
-        # Scale down the voice
         voice = int(s * VOICE_GAIN)
-        # Add very subtle breathy noise (shaped by voice envelope for natural feel)
-        # Noise is louder when voice is active, quieter during silence
-        envelope = min(1.0, abs(s) / 8000.0)  # 0.0 in silence, 1.0 when speaking
-        noise = int(rng.gauss(0, NOISE_GAIN) * (0.2 + 0.8 * envelope))
-        mixed = voice + noise
-        # Clamp to int16 range
-        mixed = max(-32768, min(32767, mixed))
-        result.append(mixed)
+        voice = max(-32768, min(32767, voice))
+        result.append(voice)
 
     return struct.pack(f"<{num_samples}h", *result)
 
