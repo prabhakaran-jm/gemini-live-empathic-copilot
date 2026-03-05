@@ -41,7 +41,7 @@ FALLBACK_MOVES: dict[str, str] = {
 COACHING_SYSTEM_PROMPT = """\
 You are an invisible real-time conversation coach using Nonviolent Communication (NVC) \
 and active listening. The user is in a difficult conversation right now. Based on the \
-transcript, tension level, and trigger, generate ONE coaching whisper.
+transcript, tension level, trigger, and optionally their webcam image, generate ONE coaching whisper.
 
 Rules:
 - Exactly 8 to 12 words, no more
@@ -50,6 +50,8 @@ Rules:
 - Never diagnose, label, or judge either party
 - Speak directly to the user in second person ("you")
 - Be warm, gentle, and concise — like a whisper in their ear
+- If a webcam image is provided, you may reference visible body language cues \
+(e.g. tension, posture, facial expression) to make coaching more relevant
 - Output ONLY the whisper phrase, nothing else
 
 Trigger types:
@@ -57,6 +59,8 @@ Trigger types:
 - barge_in: 2+ interruptions detected (turn-taking friction, people talking over each other)
 - post_escalation_silence: awkward silence after high tension (pause after escalation)\
 """
+
+COACHING_GROUNDING = os.environ.get("COACHING_GROUNDING", "0").strip().lower() in ("1", "true", "yes")
 
 _flash_client = None
 
@@ -98,10 +102,17 @@ async def generate_coaching(
     tension_score: int,
     transcript_buffer: str,
     last_whisper: str = "",
+    image_b64: str = "",
 ) -> dict[str, str]:
     """
     Call gemini-2.0-flash to produce a contextual coaching whisper.
     Returns {"move": trigger, "text": "..."}.
+
+    When image_b64 is provided (webcam frame), includes it so coaching can
+    reference visual cues (body language, facial expression, posture).
+    When COACHING_GROUNDING is enabled, adds google_search tool so whispers
+    can be grounded in NVC/conflict resolution research.
+
     Falls back to fixed phrase on any failure.
     """
     try:
@@ -111,21 +122,40 @@ async def generate_coaching(
         avoid_line = ""
         if last_whisper:
             avoid_line = f"\nPrevious whisper (DO NOT repeat): \"{last_whisper}\"\n"
-        user_prompt = (
+        user_prompt_text = (
             f"Trigger: {trigger}\n"
             f"Current tension: {tension_score}/100\n"
             f"Recent transcript:\n{transcript_buffer[-500:]}\n"
             f"{avoid_line}\n"
             f"Generate one coaching whisper (8-12 words):"
         )
+
+        # Build content parts: text + optional vision frame
+        content_parts: list = [user_prompt_text]
+        if image_b64:
+            try:
+                image_bytes = base64.b64decode(image_b64)
+                content_parts.append(
+                    genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+                )
+                logger.info("Coaching with vision frame (%d KB)", len(image_bytes) // 1024)
+            except Exception as img_err:
+                logger.warning("Failed to decode vision frame, proceeding text-only: %s", img_err)
+
+        # Build config with optional google_search grounding
+        config_kwargs: dict = {
+            "system_instruction": COACHING_SYSTEM_PROMPT,
+            "max_output_tokens": 30,
+            "temperature": 0.7,
+        }
+        if COACHING_GROUNDING:
+            config_kwargs["tools"] = [genai.types.Tool(google_search=genai.types.GoogleSearch())]
+            logger.debug("Coaching with Google Search grounding enabled")
+
         response = await client.aio.models.generate_content(
             model="gemini-2.0-flash",
-            contents=user_prompt,
-            config=genai.types.GenerateContentConfig(
-                system_instruction=COACHING_SYSTEM_PROMPT,
-                max_output_tokens=30,
-                temperature=0.7,
-            ),
+            contents=content_parts,
+            config=genai.types.GenerateContentConfig(**config_kwargs),
         )
         text = response.text.strip().strip('"').strip("'")
         word_count = len(text.split())

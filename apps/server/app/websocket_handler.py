@@ -112,6 +112,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
     last_model_backchannel_ts: float = 0.0
     audio_replay_buffer: list[str] = []  # Audio chunks buffered during reconnect
     MAX_REPLAY_CHUNKS = 50  # ~2 seconds of audio at 25 chunks/sec
+    last_frame_b64: str = ""  # Latest webcam frame (JPEG base64) for vision-aware coaching
     # STT state
     stt_thread: Any = None
     stt_audio_queue: Any = None
@@ -463,6 +464,7 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         tension_score=last_tension_score,
                         transcript_buffer=transcript_text,
                         last_whisper=last_whisper_text,
+                        image_b64=last_frame_b64,
                     )
                     last_whisper_text = coaching_result["text"]
                     # Generate TTS whisper audio (returns None if disabled or fails)
@@ -651,8 +653,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
                         if len(audio_replay_buffer) > MAX_REPLAY_CHUNKS:
                             audio_replay_buffer.pop(0)
             elif t == "frame":
-                # Vision frame is optional for this MVP backend; accept as no-op.
-                continue
+                # Store latest webcam frame for vision-aware coaching whispers
+                frame_data = (msg.get("base64") or "").strip()
+                if frame_data:
+                    last_frame_b64 = frame_data
             else:
                 await send_json(websocket, {"type": "error", "message": f"Unknown type: {t}"})
 
