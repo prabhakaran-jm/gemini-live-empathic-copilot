@@ -3,7 +3,7 @@
 Empathic Co-Pilot is a real-time multimodal **Live Agent** (Gemini Live Agent Challenge) built with the **Gemini Live API** on **Google Cloud**. It augments difficult human conversations by providing subtle, interruptible whisper coaching based on conversational signals such as tone shifts, pauses, and turn-taking dynamics.  
 Instead of replacing one side of the interaction, Empathic Co-Pilot acts as an invisible social prosthetic—supporting the user with grounded communication strategies derived from active listening and nonviolent communication principles.
 
-The **backend** is hosted on **Google Cloud Run** and uses **Gemini Live via Vertex AI** for real-time audio, backchanneling, and coaching TTS.
+The **backend** is hosted on **Google Cloud Run** and uses **Gemini Live via Vertex AI** for real-time audio. The coaching persona **"Sage"** — a calm, emotionally intelligent mentor — whispers NVC-grounded guidance through Google Cloud TTS (Studio voice).
 
 **Challenge alignment:** Uses **Gemini Live API** (real-time bidirectional audio, interruptible); **Google GenAI SDK** (google-genai); **Google Cloud** (Cloud Run, Vertex AI, Cloud TTS, Cloud STT, Cloud Build); **multimodal** (audio stream + webcam vision for body-language-aware coaching + Google Search grounding). No text-in/text-out—full duplex audio with vision-aware, evidence-grounded coaching.
 
@@ -46,9 +46,9 @@ Full steps: [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md).
 
 ## How it works
 
-1. **You talk** — The mic picks up your conversation in real time and sends audio to the backend.
-2. **We listen** — Gemini transcribes your speech while a tension engine scores volume, silence, and interruptions.
-3. **We whisper** — When tension rises, Gemini generates a calm coaching tip and speaks it softly through your speakers (Google Cloud TTS with whisper post-processing, or browser fallback).
+1. **You talk** — The mic picks up your conversation in real time and sends audio to the backend. Optionally, your webcam captures body language.
+2. **Sage listens** — Gemini transcribes your speech while a tension engine scores volume, silence, interruptions, and escalation language.
+3. **Sage whispers** — When tension rises, Gemini Flash generates a calm coaching tip (grounded in NVC research via Google Search) and Sage speaks it softly through your speakers using Google Cloud TTS Studio voice.
 
 ## Architecture
 

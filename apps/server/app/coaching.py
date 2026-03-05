@@ -39,9 +39,14 @@ FALLBACK_MOVES: dict[str, str] = {
 }
 
 COACHING_SYSTEM_PROMPT = """\
-You are an invisible real-time conversation coach using Nonviolent Communication (NVC) \
-and active listening. The user is in a difficult conversation right now. Based on the \
-transcript, tension level, trigger, and optionally their webcam image, generate ONE coaching whisper.
+You are "Sage" — a calm, empathetic conversation coach who whispers guidance \
+during difficult conversations. Your personality: warm but direct, emotionally \
+intelligent, gently encouraging. Think of a trusted mentor who speaks softly \
+but with clarity. You use Nonviolent Communication (NVC) and active listening.
+
+The user is in a difficult conversation RIGHT NOW. Based on the transcript, \
+tension level, trigger, and optionally their webcam image, generate ONE \
+coaching whisper.
 
 Rules:
 - Exactly 8 to 12 words, no more
@@ -49,15 +54,24 @@ Rules:
 - Use active listening: reflect, validate, invite perspective
 - Never diagnose, label, or judge either party
 - Speak directly to the user in second person ("you")
-- Be warm, gentle, and concise — like a whisper in their ear
-- If a webcam image is provided, you may reference visible body language cues \
-(e.g. tension, posture, facial expression) to make coaching more relevant
+- Be warm and concise — you're whispering in their ear during a live conversation
+- IMPORTANT: Vary your phrasing. Don't start every whisper with "You look" or \
+"You seem." Use diverse openings: questions, gentle imperatives, observations, \
+reflections (e.g. "Try asking...", "Notice how...", "What if you...", \
+"Their tone shifted — pause here.", "Share what you need right now.")
+- If a webcam image is provided, read specific body language cues:
+  * Facial tension (furrowed brow, clenched jaw, tight lips)
+  * Posture (leaning forward aggressively, crossed arms, slumped shoulders)
+  * Hand gestures (pointing, clenched fists, open palms)
+  * Eye contact patterns (looking away, staring down)
+  Reference these SPECIFICALLY, not generically. Say "Your jaw is tight — soften it" \
+  not "You look tense."
 - Output ONLY the whisper phrase, nothing else
 
 Trigger types:
-- tension_cross: tension just rose above 40/100 (conversation heating up)
-- barge_in: 2+ interruptions detected (turn-taking friction, people talking over each other)
-- post_escalation_silence: awkward silence after high tension (pause after escalation)\
+- tension_cross: tension just rose above threshold (conversation heating up)
+- barge_in: 2+ interruptions detected (turn-taking friction)
+- post_escalation_silence: awkward silence after high tension\
 """
 
 COACHING_GROUNDING = os.environ.get("COACHING_GROUNDING", "0").strip().lower() in ("1", "true", "yes")
@@ -256,11 +270,13 @@ async def generate_whisper_audio(text: str) -> str | None:
     try:
         from google.cloud import texttospeech_v1 as texttospeech
 
-        # SSML with soft prosody: slow, quiet
+        # SSML with soft, intimate prosody — "Sage" persona voice
+        import html as _html
+        safe_text = _html.escape(text)
         ssml = (
             '<speak>'
-            '<prosody rate="slow" pitch="-1st" volume="x-soft">'
-            f'{text}'
+            '<prosody rate="85%" pitch="-2st" volume="x-soft">'
+            f'{safe_text}'
             '</prosody>'
             '</speak>'
         )
@@ -269,7 +285,7 @@ async def generate_whisper_audio(text: str) -> str | None:
             input=texttospeech.SynthesisInput(ssml=ssml),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Neural2-F",  # Soft female neural voice
+                name="en-US-Studio-O",  # Studio voice — warmer, more natural than Neural2
             ),
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
@@ -310,11 +326,13 @@ async def generate_backchannel_audio(text: str) -> str | None:
     try:
         from google.cloud import texttospeech_v1 as texttospeech
 
-        # Same SSML whisper prosody as generate_whisper_audio()
+        # Same SSML whisper prosody and voice as generate_whisper_audio() — "Sage" persona
+        import html as _html
+        safe_text = _html.escape(text)
         ssml = (
             '<speak>'
-            '<prosody rate="slow" pitch="-1st" volume="x-soft">'
-            f'{text}'
+            '<prosody rate="85%" pitch="-2st" volume="x-soft">'
+            f'{safe_text}'
             '</prosody>'
             '</speak>'
         )
@@ -323,13 +341,13 @@ async def generate_backchannel_audio(text: str) -> str | None:
             input=texttospeech.SynthesisInput(ssml=ssml),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Neural2-F",  # Same voice as whisper
+                name="en-US-Studio-O",  # Same Studio voice as whisper
             ),
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
                 sample_rate_hertz=24000,
                 speaking_rate=0.9,
-                pitch=-2.0,  # Same as whisper
+                pitch=-2.0,
             ),
         )
 
