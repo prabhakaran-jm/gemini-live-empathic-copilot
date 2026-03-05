@@ -133,7 +133,7 @@ function playWhisperAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.30  // Blends with browser Web Speech whisper layer
+    gain.gain.value = 0.55  // Sole whisper audio — Gemini Live TTS only
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {
@@ -254,13 +254,11 @@ export default function App() {
     } else if (msg.type === 'whisper') {
       setWhisper({ text: msg.text, move: msg.move })
       lastWhisperPlayedAt = Date.now()
-      // Play Cloud TTS audio AND browser Web Speech API together.
-      // Cloud TTS provides the warm Studio voice; Web Speech adds the
-      // real breathy whisper texture from the OS voice engine.
+      // Play Gemini Live TTS audio only — natural human-like whisper voice.
+      // Browser Web Speech removed: its robotic tone clashed with Live TTS.
       if (msg.audio_base64) {
         playWhisperAudio(msg.audio_base64)
       }
-      speakWhisper(msg.text)
       addLog('in', { type: 'whisper', text: msg.text, move: msg.move })
     } else if (msg.type === 'stopped') {
       setSessionActive(false)

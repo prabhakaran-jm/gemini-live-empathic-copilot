@@ -411,9 +411,6 @@ async def generate_whisper_audio(text: str) -> str | None:
 
     Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
     """
-    if not COACHING_LIVE_AUDIO:
-        return None
-
     # Try Gemini Live TTS first — most natural sounding
     b64 = await _generate_whisper_audio_live(text)
     if b64:
@@ -430,18 +427,35 @@ async def generate_whisper_audio(text: str) -> str | None:
 
 async def generate_backchannel_audio(text: str) -> str | None:
     """
-    Generate short backchannel audio ("Ok.", "I see.") using Google Cloud TTS
-    with the same whisper voice persona and post-processing as coaching whispers.
+    Generate short backchannel audio ("Ok.", "I see.") using the same Gemini Live
+    TTS voice (Puck) as coaching whispers, so backchannel and whisper share one
+    consistent persona. Falls back to Cloud TTS if Live TTS fails.
 
     Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
     """
+    # Try Gemini Live TTS first — same Puck voice as whisper
+    b64 = await _generate_whisper_audio_live(text)
+    if b64:
+        logger.info("Live TTS backchannel generated, text=%s", text)
+        return b64
+
+    # Fall back to Cloud TTS
+    b64 = await _generate_backchannel_cloud_tts(text)
+    if b64:
+        return b64
+
+    logger.warning("All backchannel TTS methods failed for: %s", text)
+    return None
+
+
+async def _generate_backchannel_cloud_tts(text: str) -> str | None:
+    """Cloud TTS fallback for backchannel audio."""
     client = _get_tts_client()
     if client is None:
         return None
     try:
         from google.cloud import texttospeech_v1 as texttospeech
 
-        # Same SSML whisper prosody and voice as generate_whisper_audio() — "Sage" persona
         import html as _html
         safe_text = _html.escape(text)
         ssml = (
@@ -456,7 +470,7 @@ async def generate_backchannel_audio(text: str) -> str | None:
             input=texttospeech.SynthesisInput(ssml=ssml),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Studio-O",  # Same Studio voice as whisper
+                name="en-US-Studio-O",
             ),
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
@@ -477,8 +491,8 @@ async def generate_backchannel_audio(text: str) -> str | None:
         audio_bytes = _apply_whisper_effect(audio_bytes)
 
         b64 = base64.b64encode(audio_bytes).decode("ascii")
-        logger.info("TTS backchannel audio generated: %d bytes PCM16 24kHz, text=%s", len(audio_bytes), text)
+        logger.info("Cloud TTS backchannel generated: %d bytes PCM16 24kHz, text=%s", len(audio_bytes), text)
         return b64
     except Exception as e:
-        logger.warning("TTS backchannel audio generation failed: %s", e)
+        logger.warning("Cloud TTS backchannel failed: %s", e)
         return None
