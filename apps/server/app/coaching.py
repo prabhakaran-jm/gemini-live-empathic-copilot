@@ -211,9 +211,9 @@ def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
     3. Quieter overall amplitude
 
     This applies:
-    - 40% amplitude reduction (voice becomes quieter)
+    - Moderate amplitude reduction (voice becomes softer but still clear)
     - Simple low-pass smoothing (reduces sharp harmonics)
-    - Light breath noise mixed in (adds airy/breathy quality)
+    - Very light breath noise mixed in (subtle airy quality, not overpowering)
     """
     import random
     import struct
@@ -235,18 +235,18 @@ def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
         s = int(0.4 * smoothed[i - 1] + 0.6 * samples[i])
         smoothed.append(s)
 
-    # Pass 2: Reduce amplitude + mix in breath noise
-    VOICE_GAIN = 0.35  # 35% of original voice amplitude
-    NOISE_GAIN = 800   # Breath noise amplitude (out of 32768)
+    # Pass 2: Reduce amplitude + mix in very light breath noise
+    VOICE_GAIN = 0.55  # 55% of original voice amplitude — clear but soft
+    NOISE_GAIN = 200   # Very light breath noise (out of 32768) — subtle airiness
 
     result = []
     for s in smoothed:
         # Scale down the voice
         voice = int(s * VOICE_GAIN)
-        # Add breathy noise (shaped by voice envelope for natural feel)
+        # Add very subtle breathy noise (shaped by voice envelope for natural feel)
         # Noise is louder when voice is active, quieter during silence
         envelope = min(1.0, abs(s) / 8000.0)  # 0.0 in silence, 1.0 when speaking
-        noise = int(rng.gauss(0, NOISE_GAIN) * (0.3 + 0.7 * envelope))
+        noise = int(rng.gauss(0, NOISE_GAIN) * (0.2 + 0.8 * envelope))
         mixed = voice + noise
         # Clamp to int16 range
         mixed = max(-32768, min(32767, mixed))
