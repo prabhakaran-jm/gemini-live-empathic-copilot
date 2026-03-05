@@ -254,25 +254,111 @@ def _apply_whisper_effect(pcm_bytes: bytes) -> bytes:
     return struct.pack(f"<{num_samples}h", *result)
 
 
-async def generate_whisper_audio(text: str) -> str | None:
+async def _generate_whisper_audio_live(text: str) -> str | None:
     """
-    Generate whisper-quality audio from coaching text using Google Cloud TTS
-    + post-processing for a breathy, airy whisper effect.
+    Generate whisper audio via a SHORT-LIVED Gemini Live session.
+
+    Opens a separate Live session (independent of the main transcription session),
+    sends the coaching text, collects the audio response, and closes the session.
+    This produces natural, human-like speech — the single most visible differentiator
+    vs. Cloud TTS or browser Web Speech API.
 
     Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
-    The frontend plays this via playWhisperAudio() at gain 0.12.
     """
-    if not COACHING_LIVE_AUDIO:
+    try:
+        import asyncio
+        from app.gemini_live_client import _make_genai_client
+
+        client = _make_genai_client()
+        model = os.environ.get("GEMINI_MODEL", "gemini-live-2.5-flash-native-audio")
+
+        live_config = {
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {"prebuilt_voice_config": {"voice_name": "Puck"}},
+            },
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": (
+                            "You are Sage, a calm and warm conversation coach. "
+                            "Read the following coaching whisper text aloud in a soft, "
+                            "gentle, intimate tone — as if whispering encouragement "
+                            "in someone's ear. Speak slowly and warmly. "
+                            "Say ONLY the exact text provided, nothing more."
+                        )
+                    }
+                ]
+            },
+        }
+
+        cm = client.aio.live.connect(model=model, config=live_config)
+        session = await cm.__aenter__()
+
+        try:
+            from google.genai import types
+
+            # Send the coaching text for the model to speak
+            await session.send_client_content(
+                turns=types.Content(
+                    role="user",
+                    parts=[types.Part(text=f"Whisper this: {text}")],
+                ),
+                turn_complete=True,
+            )
+
+            # Collect audio chunks with a timeout
+            audio_chunks: list[bytes] = []
+            try:
+                async for msg in asyncio.wait_for(session.receive(), timeout=8.0):
+                    # Collect audio from model_turn parts
+                    if hasattr(msg, "server_content") and msg.server_content:
+                        sc = msg.server_content
+                        if hasattr(sc, "model_turn") and sc.model_turn:
+                            for part in sc.model_turn.parts:
+                                if hasattr(part, "inline_data") and part.inline_data:
+                                    audio_chunks.append(part.inline_data.data)
+                        # Stop when turn is complete
+                        if hasattr(sc, "turn_complete") and sc.turn_complete:
+                            break
+            except (asyncio.TimeoutError, StopAsyncIteration):
+                pass
+
+            if not audio_chunks:
+                logger.warning("Gemini Live TTS returned no audio chunks")
+                return None
+
+            audio_bytes = b"".join(audio_chunks)
+            audio_bytes = _apply_whisper_effect(audio_bytes)
+            b64 = base64.b64encode(audio_bytes).decode("ascii")
+            logger.info("Gemini Live TTS whisper generated: %d bytes PCM16 24kHz", len(audio_bytes))
+            return b64
+
+        finally:
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.warning("Gemini Live TTS failed (will try Cloud TTS): %s", e)
         return None
+
+
+async def _generate_whisper_audio_cloud_tts(text: str) -> str | None:
+    """
+    Generate whisper audio via Google Cloud TTS (fallback for Live TTS).
+
+    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
+    """
     client = _get_tts_client()
     if client is None:
         return None
     try:
         from google.cloud import texttospeech_v1 as texttospeech
-
-        # SSML with soft, intimate prosody — "Sage" persona voice
         import html as _html
         safe_text = _html.escape(text)
+
         ssml = (
             '<speak>'
             '<prosody rate="85%" pitch="-2st" volume="x-soft">'
@@ -285,11 +371,11 @@ async def generate_whisper_audio(text: str) -> str | None:
             input=texttospeech.SynthesisInput(ssml=ssml),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US",
-                name="en-US-Studio-O",  # Studio voice — warmer, more natural than Neural2
+                name="en-US-Studio-O",
             ),
             audio_config=texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-                sample_rate_hertz=24000,  # Matches playWhisperAudio() on frontend
+                sample_rate_hertz=24000,
                 speaking_rate=0.9,
                 pitch=-2.0,
             ),
@@ -298,19 +384,43 @@ async def generate_whisper_audio(text: str) -> str | None:
         response = await client.synthesize_speech(request=request)
         audio_bytes = response.audio_content
 
-        # Cloud TTS LINEAR16 includes a 44-byte WAV header; strip it for raw PCM
         if len(audio_bytes) > 44 and audio_bytes[:4] == b'RIFF':
             audio_bytes = audio_bytes[44:]
 
-        # Apply whisper post-processing: smoothing + breath noise + amplitude reduction
         audio_bytes = _apply_whisper_effect(audio_bytes)
-
         b64 = base64.b64encode(audio_bytes).decode("ascii")
-        logger.info("TTS whisper audio generated+processed: %d bytes PCM16 24kHz", len(audio_bytes))
+        logger.info("Cloud TTS whisper generated: %d bytes PCM16 24kHz", len(audio_bytes))
         return b64
     except Exception as e:
-        logger.warning("TTS whisper audio generation failed (will use browser TTS fallback): %s", e)
+        logger.warning("Cloud TTS whisper failed: %s", e)
         return None
+
+
+async def generate_whisper_audio(text: str) -> str | None:
+    """
+    Generate whisper audio for coaching text.
+
+    Strategy: Try Gemini Live TTS first (natural human-like speech), then
+    fall back to Cloud TTS (Studio voice + SSML), then browser Web Speech API
+    (handled by frontend when audio_base64 is None).
+
+    Returns base64-encoded PCM16 24kHz mono audio, or None on failure.
+    """
+    if not COACHING_LIVE_AUDIO:
+        return None
+
+    # Try Gemini Live TTS first — most natural sounding
+    b64 = await _generate_whisper_audio_live(text)
+    if b64:
+        return b64
+
+    # Fall back to Cloud TTS
+    b64 = await _generate_whisper_audio_cloud_tts(text)
+    if b64:
+        return b64
+
+    logger.warning("All TTS methods failed for whisper; frontend will use browser Web Speech")
+    return None
 
 
 async def generate_backchannel_audio(text: str) -> str | None:
