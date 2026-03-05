@@ -189,7 +189,7 @@ function playBackchannelAudio(base64Pcm) {
 
     const source = ctx.createBufferSource()
     const gain = ctx.createGain()
-    gain.gain.value = 0.08 // Barely audible — background acknowledgment, not foreground
+    gain.gain.value = 0.35 // Audible acknowledgment from Cloud TTS backchannel
     source.buffer = audioBuffer
     source.connect(gain).connect(ctx.destination)
     source.onended = () => {

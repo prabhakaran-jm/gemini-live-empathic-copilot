@@ -295,3 +295,46 @@ async def generate_whisper_audio(text: str) -> str | None:
     except Exception as e:
         logger.warning("TTS whisper audio generation failed (will use browser TTS fallback): %s", e)
         return None
+
+
+async def generate_backchannel_audio(text: str) -> str | None:
+    """
+    Generate short backchannel audio ("Ok.", "Mm-hmm.", "I see.") using
+    Google Cloud TTS. Returns base64-encoded PCM16 24kHz mono audio.
+
+    Uses natural speaking voice (no whisper effect) at moderate volume so
+    it sounds like a conversational acknowledgement.
+    """
+    client = _get_tts_client()
+    if client is None:
+        return None
+    try:
+        from google.cloud import texttospeech_v1 as texttospeech
+
+        request = texttospeech.SynthesizeSpeechRequest(
+            input=texttospeech.SynthesisInput(text=text),
+            voice=texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Neural2-F",  # Same voice as whisper for consistency
+            ),
+            audio_config=texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+                sample_rate_hertz=24000,
+                speaking_rate=1.0,
+                pitch=-1.0,  # Slightly lower pitch for warmth
+            ),
+        )
+
+        response = await client.synthesize_speech(request=request)
+        audio_bytes = response.audio_content
+
+        # Strip WAV header if present
+        if len(audio_bytes) > 44 and audio_bytes[:4] == b'RIFF':
+            audio_bytes = audio_bytes[44:]
+
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+        logger.info("TTS backchannel audio generated: %d bytes PCM16 24kHz, text=%s", len(audio_bytes), text)
+        return b64
+    except Exception as e:
+        logger.warning("TTS backchannel audio generation failed: %s", e)
+        return None

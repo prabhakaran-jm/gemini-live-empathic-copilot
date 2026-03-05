@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching, generate_whisper_audio
+from app.coaching import COACHING_MOVES, get_move_by_id, generate_coaching, generate_whisper_audio, generate_backchannel_audio
 from app.gemini_live_client import (
     AgentTurn,
     IGeminiLiveSession,
@@ -395,6 +395,13 @@ async def handle_websocket(websocket: WebSocket) -> None:
                     backchannel_armed = False
                     last_backchannel_ts = now
                     text = BACKCHANNEL_TEXT_OPTIONS[int(now * 1000) % len(BACKCHANNEL_TEXT_OPTIONS)]
+                    # Generate TTS audio for the backchannel phrase
+                    bc_audio_b64 = await generate_backchannel_audio(text)
+                    if bc_audio_b64:
+                        await send_json(
+                            websocket,
+                            {"type": "backchannel_audio", "audio_base64": bc_audio_b64},
+                        )
                     await send_json(
                         websocket,
                         {"type": "backchannel_text", "text": text, "ts": int(now * 1000)},
