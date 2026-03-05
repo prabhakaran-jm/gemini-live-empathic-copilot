@@ -38,7 +38,7 @@ Short path to try Empathic Co-Pilot with the deployed backend or run it locally.
      - Mac/Linux: `export VITE_WS_URL=wss://YOUR_CLOUD_RUN_URL/ws`
      - Windows: `$env:VITE_WS_URL="wss://YOUR_CLOUD_RUN_URL/ws"`
    - Open http://localhost:5173 (or add `?debug=1` to see Advanced/RMS and Event log).
-   - **Note:** Coaching whispers use **Gemini Live TTS** by default (`COACHING_LIVE_AUDIO=1` on the backend). You should *hear* the whisper as well as see the text; if not, the backend may be using Web Speech fallback.
+   - **Note:** Coaching whispers use **Google Cloud TTS** by default (`COACHING_LIVE_AUDIO=1` on the backend). You should *hear* the whisper as well as see the text; if not, the backend may be using Web Speech fallback. Enable the **webcam checkbox** before starting to see vision-aware coaching.
 
 4. **Test script**
    - Click **Start session**. Allow microphone when prompted. UI should show "Backend: Cloud Run" and session active.

@@ -48,7 +48,7 @@ Full steps: [docs/JUDGES_QUICKSTART.md](docs/JUDGES_QUICKSTART.md).
 
 1. **You talk** — The mic picks up your conversation in real time and sends audio to the backend.
 2. **We listen** — Gemini transcribes your speech while a tension engine scores volume, silence, and interruptions.
-3. **We whisper** — When tension rises, Gemini generates a calm coaching tip and speaks it softly through your speakers (Gemini Live TTS by default, or browser fallback).
+3. **We whisper** — When tension rises, Gemini generates a calm coaching tip and speaks it softly through your speakers (Google Cloud TTS with whisper post-processing, or browser fallback).
 
 ## Architecture
 
