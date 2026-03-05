@@ -19,7 +19,8 @@ graph TB
     subgraph GCP ["Google Cloud AI"]
         LIVE["Gemini Live API<br/>(bidi streaming)<br/>Transcription + Barge-in"]
         FLASH["Gemini 2.0 Flash<br/>(generate_content)<br/>NVC Coaching + Vision<br/>+ Google Search Grounding"]
-        TTS["Google Cloud TTS<br/>(Neural2-F voice)<br/>Whisper + Backchannel Audio"]
+        LIVETSS["Gemini Live TTS<br/>(short-lived session, Puck voice)<br/>Whisper + Backchannel Audio"]
+        CLOUDTTS["Google Cloud TTS<br/>(Studio-O voice, fallback)"]
         STT["Cloud Speech-to-Text<br/>(streaming fallback)"]
     end
 
@@ -31,8 +32,9 @@ graph TB
     TL -- "trigger fired" --> WL
     WL -- "transcript + tension + webcam frame" --> FLASH
     FLASH -- "8-12 word coaching whisper" --> WL
-    WL -- "whisper text" --> TTS
-    TTS -- "PCM16 24kHz audio" --> WL
+    WL -- "whisper text" --> LIVETTS
+    LIVETTS -- "PCM16 24kHz audio" --> WL
+    LIVETTS -. "fallback" .-> CLOUDTTS
     WL -- "whisper msg (text + audio_base64)" --> WS
     WS -- "PCM16 audio" --> STT
     STT -- "interim/final transcripts" --> WS
@@ -46,10 +48,11 @@ graph TB
 
 | Component | Role |
 |-----------|------|
-| **Browser (React/Vite)** | Captures mic audio (PCM16 16kHz) and optional webcam frames (JPEG). Sends base64 chunks + RMS telemetry via WebSocket. Displays tension bar, live transcript, coaching whispers. Plays whisper and backchannel audio via Web Audio API (PCM16 24kHz from Cloud TTS) or Web Speech API fallback. |
-| **Cloud Run (FastAPI)** | Accepts WebSocket at `/ws`. Runs tension scoring loop (RMS, silence, overlap, semantic escalation markers → 0-100). Runs whisper loop with 3 deterministic triggers. Streams audio to Gemini Live for transcription. Calls Gemini Flash for coaching text with optional webcam frame (vision) and Google Search grounding. Uses Google Cloud TTS (Neural2-F) for whisper and backchannel audio synthesis. |
-| **Gemini Live API** | Real-time bidirectional audio streaming. Provides transcript deltas and supports barge-in detection via `stop_generation()`. |
-| **Google Cloud TTS** | Synthesizes coaching whispers and backchannel acknowledgments ("Ok.", "I see.") using Neural2-F voice with SSML prosody (soft, slow, low-pitch). Audio is post-processed (low-pass smoothing + amplitude reduction) for a natural whisper effect. |
+| **Browser (React/Vite)** | Captures mic audio (PCM16 16kHz) and optional webcam frames (JPEG). Sends base64 chunks + RMS telemetry via WebSocket. Displays tension bar, live transcript, coaching whispers. Plays whisper and backchannel audio via Web Audio API (PCM16 24kHz from Gemini Live TTS). |
+| **Cloud Run (FastAPI)** | Accepts WebSocket at `/ws`. Runs tension scoring loop (RMS, silence, overlap, semantic escalation markers → 0-100). Runs whisper loop with 3 deterministic triggers. Streams audio to Gemini Live for transcription. Calls Gemini Flash for coaching text with optional webcam frame (vision) and Google Search grounding. Uses Gemini Live TTS (Puck voice) for whisper and backchannel audio, with Cloud TTS (Studio-O) as fallback. |
+| **Gemini Live API** | Real-time bidirectional audio streaming. Provides transcript deltas and supports barge-in detection via `stop_generation()`. Also used for TTS: short-lived sessions generate natural whisper and backchannel audio with the Puck voice. |
+| **Gemini Live TTS** | Primary audio synthesis for coaching whispers and backchannel ("Ok.", "I see."). Opens a short-lived Gemini Live session with the Puck voice to speak coaching text in a soft, intimate tone. Produces natural, human-like speech — the key differentiator from robotic TTS. Audio is post-processed (low-pass smoothing + amplitude reduction) for a whisper effect. |
+| **Google Cloud TTS** | Fallback audio synthesis using Studio-O voice with SSML prosody (soft, slow). Used when Gemini Live TTS is unavailable. Same whisper post-processing applied. |
 | **Gemini 2.0 Flash** | Generates contextual 8-12 word coaching whispers grounded in NVC (Nonviolent Communication) and active listening. Accepts optional webcam frame for body-language-aware coaching. When `COACHING_GROUNDING=1` (default), uses Google Search tool for evidence-based conflict resolution guidance. Falls back to fixed phrases if unavailable. |
 | **Cloud Speech-to-Text** | Streaming fallback transcription when Gemini Live does not emit transcript. Provides interim and final results for real-time UI updates. |
 
@@ -61,7 +64,7 @@ graph TB
 4. **Transcription:** Backend streams PCM16 to Gemini Live API → receives transcript deltas → forwards to browser. Cloud Speech-to-Text provides streaming fallback.
 5. **Barge-in:** When user speaks over agent output (RMS ≥ threshold), backend calls `stop_generation()` and emits `interrupted` event
 6. **Coaching:** When a trigger fires (tension cross, barge-in count, post-escalation silence), backend sends transcript + tension context + optional webcam frame to Gemini Flash (with Google Search grounding) → receives contextual coaching whisper → sends to browser
-7. **Audio Out:** Backend sends whisper text to Google Cloud TTS (Neural2-F, SSML whisper prosody) → receives PCM16 24kHz → applies whisper post-processing (smoothing + amplitude reduction) → sends as `audio_base64` in whisper message. Backchannel audio ("Ok.", "I see.") uses the same voice and processing pipeline. Browser plays via Web Audio API; falls back to Web Speech API if unavailable.
+7. **Audio Out:** Backend opens a short-lived Gemini Live session (Puck voice) to speak the coaching text as natural whisper audio → receives PCM16 24kHz → applies whisper post-processing (smoothing + amplitude reduction) → sends as `audio_base64` in whisper message. Falls back to Cloud TTS (Studio-O) if Live TTS fails. Backchannel audio ("Ok.", "I see.") uses the same Gemini Live TTS voice and processing pipeline. Browser plays via Web Audio API.
 
 ## Deployment
 
