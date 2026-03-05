@@ -31,6 +31,8 @@ class TensionState:
     silence_start: float | None = None  # time when current silence started
     silence_threshold_sec: float = 2.5
     overlap_count: int = 0
+    overlap_timestamps: list[float] = field(default_factory=list)
+    overlap_window_sec: float = 10.0
     recent_rms: list[float] = field(default_factory=list)
     max_rms_history: int = 50  # ~2 seconds at 25 chunks/sec
 
@@ -52,7 +54,12 @@ def compute_tension_from_telemetry(telemetry: AudioTelemetry, state: TensionStat
     if len(state.recent_rms) > state.max_rms_history:
         state.recent_rms.pop(0)
     if telemetry.is_overlap:
-        state.overlap_count += 1
+        state.overlap_timestamps.append(telemetry.ts)
+    # Keep only recent overlap events so interruption influence naturally decays.
+    cutoff = telemetry.ts - state.overlap_window_sec
+    while state.overlap_timestamps and state.overlap_timestamps[0] < cutoff:
+        state.overlap_timestamps.pop(0)
+    state.overlap_count = len(state.overlap_timestamps)
     state.last_rms = telemetry.rms
 
     # Score components (each 0..1 scale, then weighted)
