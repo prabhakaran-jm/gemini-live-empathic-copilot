@@ -276,7 +276,7 @@ export default function App() {
     } else if (msg.type === 'backchannel_audio') {
       if (msg.audio_base64) playBackchannelAudio(msg.audio_base64)
     } else if (msg.type === 'backchannel_text') {
-      if (msg.text) speakBackchannel(msg.text)
+      // Log only — TTS backchannel sounds robotic; rely on Gemini Live native audio instead
       addLog('in', { type: 'backchannel_text', text: msg.text })
     } else if (msg.type === 'event') {
       addLog('in', { type: 'event', name: msg.name })

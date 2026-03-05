@@ -349,7 +349,10 @@ async def handle_websocket(websocket: WebSocket) -> None:
             if not running or (session is None and not degraded_mode):
                 return
             if LIVE_BACKCHANNEL and backchannel_armed and not agent_output_started:
-                if (
+                # Disarm if silence lasted too long (no point saying "ok" after 5s of quiet)
+                if last_speech_ts > 0 and now - last_speech_ts > 5.0:
+                    backchannel_armed = False
+                elif (
                     now - last_speech_ts >= BACKCHANNEL_PAUSE_SEC
                     and now - last_backchannel_ts >= BACKCHANNEL_COOLDOWN_SEC
                     and now - last_model_backchannel_ts >= 2.0
