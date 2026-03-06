@@ -1,6 +1,6 @@
 """
 WebSocket handler: protocol (start/stop/audio), tension loop, coaching whispers.
-Barge-in: when user sends audio while agent is generating, we stop generation (TODO in Gemini).
+Barge-in: when user sends audio while agent is generating, we call stop_generation() on the Live session.
 """
 import asyncio
 import base64
