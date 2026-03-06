@@ -1,7 +1,7 @@
 """
 Deterministic tension score (0–100) from audio telemetry.
 Inputs: RMS volume, silence >2.5s, overlap (VAD/talk spurts).
-MVP: stub that returns a value from recent telemetry; real logic TODO.
+Deterministic tension scoring from RMS, silence duration, and overlap signals (0-100).
 """
 from __future__ import annotations
 
